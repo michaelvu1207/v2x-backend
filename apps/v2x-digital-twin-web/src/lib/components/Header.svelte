@@ -62,7 +62,7 @@
 				href="/live"
 				class={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${navClass('/live')}`}
 			>
-				Street Light View
+				Street View Live
 			</a>
 		</nav>
 	</div>
@@ -85,7 +85,7 @@
 				href="/live"
 				class={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${navClass('/live')}`}
 			>
-				Street Light
+				Street View Live
 			</a>
 		</nav>
 		<!-- Stats -->
