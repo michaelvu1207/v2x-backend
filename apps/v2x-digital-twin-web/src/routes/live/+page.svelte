@@ -1,0 +1,24 @@
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import Header from '$lib/components/Header.svelte';
+	import LiveCameraPanel from '$lib/components/LiveCameraPanel.svelte';
+	import { loadRuntimeConfig, type RuntimeConfig } from '$lib/runtime-config';
+
+	let runtimeConfig = $state<RuntimeConfig | null>(null);
+
+	onMount(async () => {
+		runtimeConfig = await loadRuntimeConfig();
+	});
+</script>
+
+<svelte:head>
+	<title>v2x-backend Street View</title>
+</svelte:head>
+
+<div class="flex h-screen flex-col overflow-hidden bg-gray-950">
+	<Header />
+
+	<div class="min-h-0 flex-1 overflow-y-auto bg-black">
+		<LiveCameraPanel config={runtimeConfig} />
+	</div>
+</div>

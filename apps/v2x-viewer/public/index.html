@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>V2X Detections Viewer</title>
+    <style>
+      :root {
+        --bg: #0b0f17;
+        --panel: rgba(255, 255, 255, 0.06);
+        --panel2: rgba(255, 255, 255, 0.09);
+        --text: #e9eefc;
+        --muted: rgba(233, 238, 252, 0.7);
+        --line: rgba(233, 238, 252, 0.15);
+        --accent: #59ffa8;
+        --warn: #ffcf5a;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+          Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      }
+      body {
+        margin: 0;
+        font-family: var(--sans);
+        background: radial-gradient(1200px 800px at 10% -10%, rgba(89, 255, 168, 0.25), transparent 55%),
+          radial-gradient(900px 700px at 110% 10%, rgba(90, 140, 255, 0.25), transparent 60%),
+          var(--bg);
+        color: var(--text);
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      header {
+        padding: 28px 20px 12px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(to bottom, rgba(255, 255, 255, 0.05), transparent);
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        letter-spacing: 0.2px;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+      }
+      .pill {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 2px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 16px;
+        padding: 16px 20px 28px;
+      }
+      @media (max-width: 960px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .card h2 {
+        margin: 0;
+        padding: 12px 14px;
+        font-size: 14px;
+        letter-spacing: 0.2px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .card .body {
+        padding: 12px 14px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 10px;
+        align-items: end;
+      }
+      @media (max-width: 640px) {
+        .row {
+          grid-template-columns: 1fr;
+        }
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 10px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(10, 14, 22, 0.7);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 13px;
+        outline: none;
+      }
+      input:focus,
+      select:focus {
+        border-color: rgba(89, 255, 168, 0.45);
+        box-shadow: 0 0 0 3px rgba(89, 255, 168, 0.12);
+      }
+      button {
+        padding: 10px 14px;
+        border-radius: 10px;
+        border: 1px solid rgba(89, 255, 168, 0.35);
+        background: rgba(89, 255, 168, 0.14);
+        color: var(--text);
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:hover {
+        background: rgba(89, 255, 168, 0.2);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .warn {
+        color: var(--warn);
+      }
+      pre {
+        margin: 0;
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: rgba(0, 0, 0, 0.25);
+        border: 1px solid var(--line);
+        padding: 10px;
+        border-radius: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 10px 10px;
+        border-bottom: 1px solid rgba(233, 238, 252, 0.1);
+        vertical-align: top;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      th {
+        text-align: left;
+        color: var(--muted);
+        font-weight: 600;
+        position: sticky;
+        top: 0;
+        background: rgba(9, 12, 18, 0.9);
+        backdrop-filter: blur(6px);
+        z-index: 1;
+      }
+      .k {
+        color: rgba(89, 255, 168, 0.95);
+      }
+      .foot {
+        padding-top: 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap">
+        <h1>
+          V2X Detections Viewer
+          <span class="pill" id="api-pill">API: loading…</span>
+        </h1>
+        <div class="muted" style="margin-top: 8px; font-size: 13px">
+          Queries DynamoDB-backed detections through a read-only HTTP API (no AWS creds in the
+          browser).
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <div class="grid">
+        <section class="card">
+          <h2>Browse</h2>
+          <div class="body">
+            <div class="row">
+              <div>
+                <label for="mode">Query</label>
+                <select id="mode">
+                  <option value="recent">Recent (scan)</option>
+                  <option value="object">By object_id</option>
+                  <option value="geohash">By geohash</option>
+                </select>
+              </div>
+              <div>
+                <label for="q">Value</label>
+                <input
+                  id="q"
+                  placeholder="traffic_cone_001 or f43h7"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div>
+                <button id="run">Run</button>
+              </div>
+            </div>
+
+            <div class="foot">
+              <span class="warn" id="scan-warn" style="display: none">
+                Recent uses a DynamoDB Scan. Add a dedicated “recent” index if this grows.
+              </span>
+            </div>
+
+            <div style="margin-top: 12px" class="card" aria-label="results">
+              <h2>Results</h2>
+              <div class="body" style="padding: 0; max-height: 520px; overflow: auto">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>timestamp_utc</th>
+                      <th>object_id</th>
+                      <th>type</th>
+                      <th>geohash</th>
+                      <th>confidence</th>
+                      <th>device</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rows"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 12px">
+              <button id="more" disabled>Load more</button>
+              <button id="raw">Show last raw JSON</button>
+            </div>
+            <div style="margin-top: 10px; display: none" id="raw-wrap">
+              <pre id="raw-pre"></pre>
+            </div>
+          </div>
+        </section>
+
+        <aside class="card">
+          <h2>Documentation</h2>
+          <div class="body">
+            <div class="muted" style="font-size: 13px; margin-bottom: 10px">
+              Data is stored in DynamoDB table <span class="k">v2x_detections</span> with keys:
+              <span class="k">object_id</span> (PK) and <span class="k">ts_event</span> (SK =
+              <code>timestamp_utc#event_id</code>). A GSI exists on
+              <span class="k">geohash</span> + <span class="k">ts_event</span>.
+            </div>
+
+            <div style="margin-bottom: 8px; font-size: 12px" class="muted">HTTP API routes</div>
+            <pre id="routes"></pre>
+
+            <div style="margin-top: 12px; font-size: 12px" class="muted">
+              Example publish (IoT topic):
+            </div>
+            <pre>v2x/v1/detections/&lt;fleet_id&gt;/&lt;device_id&gt;</pre>
+
+            <div style="margin-top: 10px; font-size: 12px" class="muted">
+              Notes
+            </div>
+            <pre>
+- This UI is intentionally small and read-only.
+- For map/bounding-box queries, store a higher-precision geohash and/or use OpenSearch.
+- Lock the API down before using this outside dev (auth + allowlisted origins).</pre
+            >
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+      const rowsEl = el("rows");
+      const modeEl = el("mode");
+      const qEl = el("q");
+      const runEl = el("run");
+      const moreEl = el("more");
+      const rawEl = el("raw");
+      const rawWrapEl = el("raw-wrap");
+      const rawPreEl = el("raw-pre");
+      const apiPillEl = el("api-pill");
+      const routesEl = el("routes");
+      const scanWarnEl = el("scan-warn");
+
+      let config = null;
+      let nextToken = null;
+      let lastJson = null;
+
+      function setBusy(busy) {
+        runEl.disabled = busy;
+        moreEl.disabled = busy || !nextToken;
+        runEl.textContent = busy ? "Loading…" : "Run";
+      }
+
+      function fmt(v) {
+        return v == null ? "" : String(v);
+      }
+
+      function addRows(items) {
+        const frag = document.createDocumentFragment();
+        for (const item of items) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${fmt(item.timestamp_utc)}</td>
+            <td>${fmt(item.object_id)}</td>
+            <td>${fmt(item.object_type)}</td>
+            <td>${fmt(item.geohash)}</td>
+            <td>${fmt(item.confidence_score)}</td>
+            <td>${fmt(item.device_id)}</td>
+          `;
+          frag.appendChild(tr);
+        }
+        rowsEl.appendChild(frag);
+      }
+
+      function clearRows() {
+        rowsEl.innerHTML = "";
+      }
+
+      function buildUrl({ mode, q, limit, next }) {
+        const base = config.apiBaseUrl.replace(/\/+$/, "");
+        let path = "";
+        if (mode === "recent") path = config.routes.recent;
+        if (mode === "object") path = config.routes.byObject.replace("{object_id}", encodeURIComponent(q));
+        if (mode === "geohash") path = config.routes.byGeohash.replace("{geohash}", encodeURIComponent(q));
+
+        const url = new URL(base + path);
+        url.searchParams.set("limit", String(limit || 50));
+        if (next) url.searchParams.set("next", next);
+        return url.toString();
+      }
+
+      async function fetchPage({ reset }) {
+        const mode = modeEl.value;
+        const q = qEl.value.trim();
+        if ((mode === "object" || mode === "geohash") && !q) {
+          alert("Enter a value for the selected query.");
+          return;
+        }
+
+        scanWarnEl.style.display = mode === "recent" ? "inline" : "none";
+
+        const url = buildUrl({ mode, q, limit: 50, next: reset ? null : nextToken });
+        setBusy(true);
+        try {
+          const res = await fetch(url, { headers: { accept: "application/json" } });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          lastJson = json;
+          if (reset) clearRows();
+          addRows(json.items || []);
+          nextToken = json.next || null;
+          moreEl.disabled = !nextToken;
+        } catch (e) {
+          console.error(e);
+          alert(String(e));
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function init() {
+        const res = await fetch("/config.json");
+        config = await res.json();
+        apiPillEl.textContent = `API: ${config.apiBaseUrl}`;
+        routesEl.textContent = [
+          `${config.apiBaseUrl}${config.routes.recent}`,
+          `${config.apiBaseUrl}${config.routes.byObject}`,
+          `${config.apiBaseUrl}${config.routes.byGeohash}`,
+        ].join("\n");
+        await fetchPage({ reset: true });
+      }
+
+      modeEl.addEventListener("change", () => {
+        nextToken = null;
+        const mode = modeEl.value;
+        scanWarnEl.style.display = mode === "recent" ? "inline" : "none";
+      });
+      runEl.addEventListener("click", () => fetchPage({ reset: true }));
+      moreEl.addEventListener("click", () => fetchPage({ reset: false }));
+      rawEl.addEventListener("click", () => {
+        rawWrapEl.style.display = rawWrapEl.style.display === "none" ? "block" : "none";
+        rawPreEl.textContent = JSON.stringify(lastJson, null, 2);
+      });
+
+      init().catch((e) => {
+        console.error(e);
+        alert("Failed to load config.json");
+      });
+    </script>
+  </body>
+</html>
+

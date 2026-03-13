@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>V2X Viewer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="topnav">
+          <a class="btn" href="/docs.html">Docs</a>
+          <span class="pill" id="apiPill">API: loading…</span>
+        </div>
+        <h1>Detections</h1>
+        <p class="muted small">Read-only view via API Gateway.</p>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <div>
+            <label for="mode">Query</label>
+            <select id="mode">
+              <option value="recent">Recent</option>
+              <option value="object">By object_id</option>
+              <option value="geohash">By geohash</option>
+            </select>
+          </div>
+          <div>
+            <label for="q">Value</label>
+            <input id="q" autocomplete="off" spellcheck="false" placeholder="traffic_cone_001 or f43h7" />
+          </div>
+          <div>
+            <button id="run">Run</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>timestamp_utc</th>
+                <th>object_id</th>
+                <th>object_type</th>
+                <th>gps_location</th>
+                <th>street</th>
+                <th>notes</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="links" style="margin-top: 10px">
+          <button id="more" disabled>Load more</button>
+          <button id="rawBtn">Toggle raw JSON</button>
+        </div>
+        <div id="rawWrap" style="display: none">
+          <pre id="rawPre"></pre>
+        </div>
+      </section>
+    </div>
+
+    <script type="module">
+      const el = (id) => document.getElementById(id);
+      const rowsEl = el("rows");
+      const modeEl = el("mode");
+      const qEl = el("q");
+      const runEl = el("run");
+      const moreEl = el("more");
+      const rawBtnEl = el("rawBtn");
+      const rawWrapEl = el("rawWrap");
+      const rawPreEl = el("rawPre");
+      const apiPillEl = el("apiPill");
+
+      let config = null;
+      let nextToken = null;
+      let lastJson = null;
+
+      function setBusy(busy) {
+        runEl.disabled = busy;
+        moreEl.disabled = busy || !nextToken;
+        runEl.textContent = busy ? "Loading…" : "Run";
+      }
+
+      function clearRows() {
+        rowsEl.innerHTML = "";
+      }
+
+      function addRows(items) {
+        const frag = document.createDocumentFragment();
+        for (const item of items) {
+          const gps = item.gps_location
+            ? `${item.gps_location.latitude ?? ""}, ${item.gps_location.longitude ?? ""}`
+            : "";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${item.timestamp_utc ?? ""}</td>
+            <td>${item.object_id ?? ""}</td>
+            <td>${item.object_type ?? ""}</td>
+            <td>${gps}</td>
+            <td>${item.street_name_normalized ?? ""}</td>
+            <td>${item.notes ?? ""}</td>
+          `;
+          frag.appendChild(tr);
+        }
+        rowsEl.appendChild(frag);
+      }
+
+      function buildUrl({ mode, q, limit, next }) {
+        const base = config.apiBaseUrl.replace(/\/+$/, "");
+        let path = "";
+        if (mode === "recent") path = config.routes.recent;
+        if (mode === "object") path = config.routes.byObject.replace("{object_id}", encodeURIComponent(q));
+        if (mode === "geohash") path = config.routes.byGeohash.replace("{geohash}", encodeURIComponent(q));
+        const url = new URL(base + path);
+        url.searchParams.set("limit", String(limit || 50));
+        if (next) url.searchParams.set("next", next);
+        return url.toString();
+      }
+
+      function setValueEnabled() {
+        const mode = modeEl.value;
+        const needsValue = mode === "object" || mode === "geohash";
+        qEl.disabled = !needsValue;
+        qEl.placeholder = needsValue ? "traffic_cone_001 or f43h7" : "(not used)";
+        if (!needsValue) qEl.value = "";
+      }
+
+      async function fetchPage({ reset }) {
+        const mode = modeEl.value;
+        const q = qEl.value.trim();
+        if ((mode === "object" || mode === "geohash") && !q) {
+          alert("Enter a value for the selected query.");
+          return;
+        }
+
+        setValueEnabled();
+
+        const url = buildUrl({ mode, q, limit: 50, next: reset ? null : nextToken });
+        setBusy(true);
+        try {
+          const res = await fetch(url, { headers: { accept: "application/json" } });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          lastJson = json;
+          if (reset) clearRows();
+          addRows(json.items || []);
+          nextToken = json.next || null;
+          moreEl.disabled = !nextToken;
+        } catch (e) {
+          console.error(e);
+          alert(String(e));
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function init() {
+        const res = await fetch("/config.json", { cache: "no-store" });
+        config = await res.json();
+        apiPillEl.textContent = `API: ${config.apiBaseUrl}`;
+        modeEl.value = "recent";
+        setValueEnabled();
+        await fetchPage({ reset: true });
+      }
+
+      modeEl.addEventListener("change", () => {
+        nextToken = null;
+        setValueEnabled();
+      });
+      runEl.addEventListener("click", () => fetchPage({ reset: true }));
+      moreEl.addEventListener("click", () => fetchPage({ reset: false }));
+      rawBtnEl.addEventListener("click", () => {
+        rawWrapEl.style.display = rawWrapEl.style.display === "none" ? "block" : "none";
+        rawPreEl.textContent = JSON.stringify(lastJson, null, 2);
+      });
+
+      init().catch((e) => {
+        console.error(e);
+        alert("Failed to load /config.json");
+      });
+    </script>
+  </body>
+</html>
