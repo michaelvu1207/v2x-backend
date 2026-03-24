@@ -61,18 +61,5 @@
 		</div>
 	{/if}
 
-	<!-- Camera view toggle buttons - above the HUD -->
-	<div class="absolute bottom-16 sm:bottom-20 left-1/2 -translate-x-1/2 flex gap-0.5 sm:gap-1 bg-black/60 rounded-lg p-0.5 sm:p-1 pointer-events-auto">
-		{#each CAMERA_VIEWS as view}
-			<button
-				onclick={() => onSwitchView(view.id as CameraView)}
-				class="px-1.5 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-xs rounded-md transition-colors {activeView === view.id
-					? 'bg-white/20 text-white'
-					: 'text-gray-400 hover:text-white hover:bg-white/10'}"
-			>
-				<span class="hidden sm:inline">{view.label}</span><span class="sm:hidden">{view.key}</span>
-				<span class="ml-0.5 sm:ml-1 text-gray-500 hidden sm:inline">{view.key}</span>
-			</button>
-		{/each}
-	</div>
+	<!-- Camera view toggle buttons removed — moved to top bar in drive page -->
 </div>

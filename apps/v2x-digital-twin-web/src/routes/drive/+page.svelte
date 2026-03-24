@@ -3,7 +3,6 @@
 	import { DRIVE_WS_URL } from '$lib/constants';
 	import type { CameraView } from '$lib/types';
 
-	// Stores — Gamepad (wheel)
 	import {
 		gamepadConnected,
 		normalizedInput,
@@ -11,7 +10,6 @@
 		stopPolling,
 	} from '$lib/stores/gamepad';
 
-	// Stores — Keyboard
 	import {
 		keyboardActive,
 		keyboardInput,
@@ -19,7 +17,6 @@
 		stopKeyboardInput,
 	} from '$lib/stores/keyboard';
 
-	// Stores — Drive session
 	import {
 		driveConnected,
 		sessionState,
@@ -36,7 +33,6 @@
 		setOnFrame,
 	} from '$lib/stores/driveSocket';
 
-	// Components
 	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
 	import HudOverlay from '$lib/components/HudOverlay.svelte';
@@ -49,18 +45,12 @@
 	let inputMode = $state<InputMode>('keyboard');
 	let cameraViewRef = $state<CameraViewComponent | null>(null);
 
-	// Reactive values from stores
 	let connected = $derived($driveConnected);
 	let state = $derived($sessionState);
 	let currentTelemetry = $derived($telemetry);
 	let gamepad = $derived($gamepadConnected);
 	let error = $derived($lastError);
-	let sceneObjects = $derived($objectsCount);
 
-	// Use whichever input source is active
-	let hasAnyInput = $derived(gamepad || true); // keyboard always available
-
-	// Auto-start control loop when session goes to driving
 	$effect(() => {
 		if ($sessionState === 'driving') {
 			startControlLoop();
@@ -68,11 +58,10 @@
 	});
 
 	onMount(() => {
-		startPolling(); // always poll for gamepad connections
+		startPolling();
 		startKeyboardInput();
 		connect(DRIVE_WS_URL);
 
-		// Wire binary WebSocket frames to the camera view
 		setOnFrame((blob: Blob) => {
 			if (cameraViewRef) {
 				cameraViewRef.pushFrame(blob);
@@ -153,119 +142,107 @@
 	<CalibrationWizard onComplete={handleCalibrationComplete} />
 {/if}
 
-<div class="h-screen w-screen bg-gray-950 flex flex-col">
-	<!-- Top bar — compact, wraps on small screens -->
-	<header class="flex flex-wrap items-center justify-between px-2 sm:px-4 py-1.5 sm:py-2 bg-gray-900/80 border-b border-gray-800 z-10 gap-1">
-		<div class="flex items-center gap-2">
-			<a href="/" class="text-xs sm:text-sm text-gray-400 hover:text-white transition-colors">&larr;</a>
-			<span class="text-sm sm:text-base text-white font-semibold">V2X Drive</span>
-		</div>
-		<div class="flex items-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
-			<div class="flex bg-gray-800 rounded-lg p-0.5">
-				<button
-					onclick={() => setInputMode('keyboard')}
-					class="px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-md transition-colors {inputMode === 'keyboard' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
-					KB
-				</button>
-				<button
-					onclick={() => setInputMode('wheel')}
-					class="px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-md transition-colors {inputMode === 'wheel' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'} {!gamepad ? 'opacity-50' : ''}">
-					Wheel
-				</button>
-			</div>
-			<span class="flex items-center gap-1">
-				<span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
-				<span class="hidden sm:inline">{connected ? 'Connected' : 'Disconnected'}</span>
-			</span>
-			{#if inputMode === 'wheel'}
-				<button onclick={() => showCalibration = true}
-					class="px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition-colors">
-					Cal
-				</button>
-			{/if}
-		</div>
-	</header>
+<div class="h-screen w-screen bg-black relative overflow-hidden">
+	{#if state === 'idle' || state === 'connecting'}
+		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
+			<div class="w-80 p-6 bg-gray-900 rounded-2xl border border-gray-800 text-center">
+				{#if !connected}
+					<div class="py-8">
+						<div class="w-8 h-8 mx-auto mb-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+						<p class="text-sm text-gray-400">Connecting to drive server...</p>
+					</div>
+				{:else}
+					<h2 class="text-xl font-bold text-white mb-2">V2X Drive</h2>
+					<p class="text-sm text-gray-400 mb-4">Drive through the CARLA world</p>
 
-	<!-- Main content -->
-	<div class="flex-1 relative">
-		{#if state === 'idle' || state === 'connecting'}
-			<div class="absolute inset-0 flex items-center justify-center">
-				<div class="w-80 p-6 bg-gray-900 rounded-2xl border border-gray-800 text-center">
-					{#if !connected}
-						<div class="py-8">
-							<div class="w-8 h-8 mx-auto mb-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-							<p class="text-sm text-gray-400">Connecting to drive server...</p>
+					<!-- Input mode toggle -->
+					<div class="flex justify-center mb-4">
+						<div class="flex bg-gray-800 rounded-lg p-0.5">
+							<button onclick={() => setInputMode('keyboard')}
+								class="px-3 py-1 rounded-md text-sm transition-colors {inputMode === 'keyboard' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
+								Keyboard
+							</button>
+							<button onclick={() => setInputMode('wheel')}
+								class="px-3 py-1 rounded-md text-sm transition-colors {inputMode === 'wheel' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'} {!gamepad ? 'opacity-50' : ''}">
+								Wheel {gamepad ? '' : '(N/A)'}
+							</button>
 						</div>
-					{:else}
-						<h2 class="text-xl font-bold text-white mb-2">V2X Drive</h2>
-						<p class="text-sm text-gray-400 mb-6">Drive through the CARLA world</p>
+					</div>
 
-						<button onclick={handleQuickStart}
-							class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
-							Start Driving
-						</button>
-
-						<!-- Controls reference -->
-						{#if inputMode === 'keyboard'}
-							<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 text-left">
-								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">W</kbd> Throttle</span>
-								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">S</kbd> Reverse</span>
-								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">A</kbd> / <kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">D</kbd> Steer</span>
-								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">Space</kbd> Brake</span>
-								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">R</kbd> Respawn</span>
-								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">1-4</kbd> Camera</span>
-							</div>
-						{:else if gamepad}
-							<p class="text-xs text-green-400">Wheel connected — ready</p>
-						{:else}
-							<p class="text-xs text-yellow-400">Connect wheel or switch to Keyboard mode</p>
-						{/if}
-					{/if}
-				</div>
-			</div>
-
-		{:else if state === 'reconstructing'}
-			<div class="absolute inset-0 flex items-center justify-center">
-				<div class="text-center">
-					<div class="w-12 h-12 mx-auto mb-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-					<p class="text-lg text-white font-medium">Reconstructing Scene</p>
-					<p class="text-sm text-gray-400 mt-1">Spawning objects in CARLA...</p>
-				</div>
-			</div>
-
-		{:else if state === 'driving'}
-			<!-- Full-screen camera view with HUD -->
-			<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
-			<HudOverlay telemetry={currentTelemetry} isRecording={true} />
-
-			<!-- Input mode indicator -->
-			<div class="absolute top-1 sm:top-2 left-1 sm:left-2 z-20 px-2 py-1 bg-black/60 rounded text-[10px] sm:text-xs text-gray-300 pointer-events-none">
-				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
-			</div>
-
-			<!-- Top-right buttons -->
-			<div class="absolute top-1 sm:top-2 right-1 sm:right-2 z-20 flex gap-1 sm:gap-2 pointer-events-auto">
-				<button onclick={() => respawnVehicle()}
-					class="px-2 sm:px-4 py-1 sm:py-2 bg-blue-600/80 hover:bg-blue-600 rounded-lg text-[10px] sm:text-sm font-medium text-white transition-colors">
-					Respawn
-				</button>
-				<button onclick={handleEndSession}
-					class="px-2 sm:px-4 py-1 sm:py-2 bg-red-600/80 hover:bg-red-600 rounded-lg text-[10px] sm:text-sm font-medium text-white transition-colors">
-					End
-				</button>
-			</div>
-
-		{:else if state === 'error'}
-			<div class="absolute inset-0 flex items-center justify-center">
-				<div class="text-center max-w-md">
-					<p class="text-xl text-red-400 font-bold mb-2">Error</p>
-					<p class="text-sm text-gray-400 mb-4">{error}</p>
-					<button onclick={() => sessionState.set('idle')}
-						class="px-6 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-white transition-colors">
-						Try Again
+					<button onclick={handleQuickStart}
+						class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
+						Start Driving
 					</button>
-				</div>
+
+					{#if inputMode === 'keyboard'}
+						<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 text-left">
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">W</kbd> Throttle</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">S</kbd> Reverse</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">A</kbd> / <kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">D</kbd> Steer</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">Space</kbd> Brake</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">R</kbd> Respawn</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">1-4</kbd> Camera</span>
+						</div>
+					{:else if gamepad}
+						<p class="text-xs text-green-400">Wheel connected — ready</p>
+					{:else}
+						<p class="text-xs text-yellow-400">Connect wheel or switch to Keyboard</p>
+					{/if}
+				{/if}
 			</div>
-		{/if}
-	</div>
+		</div>
+
+	{:else if state === 'reconstructing'}
+		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
+			<div class="text-center">
+				<div class="w-12 h-12 mx-auto mb-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+				<p class="text-lg text-white font-medium">Loading scene...</p>
+			</div>
+		</div>
+
+	{:else if state === 'driving'}
+		<!-- Full-screen camera — no header, everything overlays -->
+		<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
+		<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+
+		<!-- All buttons overlay on the video -->
+		<div class="absolute top-2 right-2 z-20 flex gap-1.5 pointer-events-auto">
+			{#each [{ id: 'chase', label: 'Chase' }, { id: 'hood', label: 'Hood' }, { id: 'bird', label: 'Bird' }, { id: 'free', label: 'Free' }] as view}
+				<button onclick={() => handleCameraSwitch(view.id as CameraView)}
+					class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors {activeCamera === view.id
+						? 'bg-white/25 text-white'
+						: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
+					{view.label}
+				</button>
+			{/each}
+			<button onclick={() => respawnVehicle()}
+				class="px-2.5 py-1.5 bg-blue-600/70 hover:bg-blue-600 rounded-lg text-xs font-medium text-white transition-colors">
+				Respawn
+			</button>
+			<button onclick={handleEndSession}
+				class="px-2.5 py-1.5 bg-red-600/70 hover:bg-red-600 rounded-lg text-xs font-medium text-white transition-colors">
+				End
+			</button>
+		</div>
+
+		<!-- Input mode + connection — top left, subtle -->
+		<div class="absolute top-2 left-2 z-20 flex items-center gap-2 pointer-events-auto">
+			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
+				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
+			</span>
+			<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
+		</div>
+
+	{:else if state === 'error'}
+		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
+			<div class="text-center max-w-md">
+				<p class="text-xl text-red-400 font-bold mb-2">Error</p>
+				<p class="text-sm text-gray-400 mb-4">{error}</p>
+				<button onclick={() => sessionState.set('idle')}
+					class="px-6 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-white transition-colors">
+					Try Again
+				</button>
+			</div>
+		</div>
+	{/if}
 </div>
