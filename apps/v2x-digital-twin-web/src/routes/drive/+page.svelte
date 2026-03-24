@@ -37,7 +37,6 @@
 	} from '$lib/stores/driveSocket';
 
 	// Components
-	import TimePicker from '$lib/components/TimePicker.svelte';
 	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
 	import HudOverlay from '$lib/components/HudOverlay.svelte';
@@ -61,10 +60,10 @@
 	// Use whichever input source is active
 	let hasAnyInput = $derived(gamepad || true); // keyboard always available
 
-	// Auto-detect: if a wheel connects, suggest switching
+	// Auto-start control loop when session goes to driving
 	$effect(() => {
-		if ($gamepadConnected && inputMode === 'keyboard') {
-			// Wheel just connected — user can switch manually
+		if ($sessionState === 'driving') {
+			startControlLoop();
 		}
 	});
 
@@ -92,12 +91,10 @@
 		disconnect();
 	});
 
-	function handleTimeSelect(start: string, end: string) {
-		startSession(start, end);
-	}
-
-	function handleStartDriving() {
-		startControlLoop();
+	function handleQuickStart() {
+		const now = new Date();
+		const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+		startSession(oneHourAgo.toISOString(), now.toISOString());
 	}
 
 	function handleEndSession() {
@@ -194,38 +191,37 @@
 	<!-- Main content -->
 	<div class="flex-1 relative">
 		{#if state === 'idle' || state === 'connecting'}
-			<!-- Setup panel -->
 			<div class="absolute inset-0 flex items-center justify-center">
-				<div class="w-[28rem] p-6 bg-gray-900 rounded-2xl border border-gray-800">
+				<div class="w-80 p-6 bg-gray-900 rounded-2xl border border-gray-800 text-center">
 					{#if !connected}
-						<div class="text-center py-8">
+						<div class="py-8">
 							<div class="w-8 h-8 mx-auto mb-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
 							<p class="text-sm text-gray-400">Connecting to drive server...</p>
 						</div>
 					{:else}
-						<TimePicker onselect={handleTimeSelect} disabled={!connected} />
+						<h2 class="text-xl font-bold text-white mb-2">V2X Drive</h2>
+						<p class="text-sm text-gray-400 mb-6">Drive through the CARLA world</p>
+
+						<button onclick={handleQuickStart}
+							class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
+							Start Driving
+						</button>
 
 						<!-- Controls reference -->
-						<div class="mt-4 pt-4 border-t border-gray-800">
-							{#if inputMode === 'keyboard'}
-								<p class="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">Keyboard Controls</p>
-								<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-400">
-									<span><kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">W</kbd> / <kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">↑</kbd> Throttle</span>
-									<span><kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">S</kbd> / <kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">↓</kbd> Reverse</span>
-									<span><kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">A</kbd> / <kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">←</kbd> Steer left</span>
-									<span><kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">D</kbd> / <kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">→</kbd> Steer right</span>
-									<span><kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">Space</kbd> Brake</span>
-									<span><kbd class="px-1.5 py-0.5 bg-gray-800 rounded text-gray-300 font-mono">1-4</kbd> Camera views</span>
-								</div>
-							{:else}
-								<p class="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">Wheel Controls</p>
-								{#if gamepad}
-									<p class="text-xs text-green-400">Wheel connected — ready to drive</p>
-								{:else}
-									<p class="text-xs text-yellow-400">Connect your steering wheel to use wheel mode</p>
-								{/if}
-							{/if}
-						</div>
+						{#if inputMode === 'keyboard'}
+							<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 text-left">
+								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">W</kbd> Throttle</span>
+								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">S</kbd> Reverse</span>
+								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">A</kbd> / <kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">D</kbd> Steer</span>
+								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">Space</kbd> Brake</span>
+								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">R</kbd> Respawn</span>
+								<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">1-4</kbd> Camera</span>
+							</div>
+						{:else if gamepad}
+							<p class="text-xs text-green-400">Wheel connected — ready</p>
+						{:else}
+							<p class="text-xs text-yellow-400">Connect wheel or switch to Keyboard mode</p>
+						{/if}
 					{/if}
 				</div>
 			</div>
@@ -236,21 +232,6 @@
 					<div class="w-12 h-12 mx-auto mb-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
 					<p class="text-lg text-white font-medium">Reconstructing Scene</p>
 					<p class="text-sm text-gray-400 mt-1">Spawning objects in CARLA...</p>
-				</div>
-			</div>
-
-		{:else if state === 'ready'}
-			<div class="absolute inset-0 flex items-center justify-center">
-				<div class="text-center">
-					<p class="text-2xl text-white font-bold mb-2">Scene Ready</p>
-					<p class="text-sm text-gray-400 mb-2">{sceneObjects} objects reconstructed</p>
-					<p class="text-xs text-gray-500 mb-6">
-						{inputMode === 'keyboard' ? 'Using keyboard controls (WASD)' : 'Using steering wheel'}
-					</p>
-					<button onclick={handleStartDriving}
-						class="px-8 py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors">
-						Start Driving
-					</button>
 				</div>
 			</div>
 

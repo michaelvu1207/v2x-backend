@@ -116,7 +116,7 @@ function scheduleReconnect(wsUrl: string): void {
 function handleServerMessage(msg: DriveMessage): void {
 	switch (msg.type) {
 		case 'session_ready':
-			sessionState.set('ready');
+			sessionState.set('driving');
 			vehicleId.set(msg.vehicle_id as number);
 			objectsCount.set(msg.objects_count as number);
 			break;
