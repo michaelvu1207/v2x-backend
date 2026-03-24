@@ -154,35 +154,33 @@
 {/if}
 
 <div class="h-screen w-screen bg-gray-950 flex flex-col">
-	<!-- Top bar -->
-	<header class="flex items-center justify-between px-4 py-2 bg-gray-900/80 border-b border-gray-800 z-10">
-		<div class="flex items-center gap-3">
-			<a href="/" class="text-sm text-gray-400 hover:text-white transition-colors">&larr; Dashboard</a>
-			<span class="text-white font-semibold">V2X Drive</span>
+	<!-- Top bar — compact, wraps on small screens -->
+	<header class="flex flex-wrap items-center justify-between px-2 sm:px-4 py-1.5 sm:py-2 bg-gray-900/80 border-b border-gray-800 z-10 gap-1">
+		<div class="flex items-center gap-2">
+			<a href="/" class="text-xs sm:text-sm text-gray-400 hover:text-white transition-colors">&larr;</a>
+			<span class="text-sm sm:text-base text-white font-semibold">V2X Drive</span>
 		</div>
-		<div class="flex items-center gap-4 text-xs">
-			<!-- Input mode toggle -->
+		<div class="flex items-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
 			<div class="flex bg-gray-800 rounded-lg p-0.5">
 				<button
 					onclick={() => setInputMode('keyboard')}
-					class="px-2.5 py-1 rounded-md transition-colors {inputMode === 'keyboard' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
-					Keyboard
+					class="px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-md transition-colors {inputMode === 'keyboard' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
+					KB
 				</button>
 				<button
 					onclick={() => setInputMode('wheel')}
-					class="px-2.5 py-1 rounded-md transition-colors {inputMode === 'wheel' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'} {!gamepad ? 'opacity-50' : ''}">
-					Wheel {gamepad ? '' : '(N/A)'}
+					class="px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-md transition-colors {inputMode === 'wheel' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'} {!gamepad ? 'opacity-50' : ''}">
+					Wheel
 				</button>
 			</div>
-			<!-- Connection status -->
-			<span class="flex items-center gap-1.5">
-				<span class="w-2 h-2 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
-				{connected ? 'Connected' : 'Disconnected'}
+			<span class="flex items-center gap-1">
+				<span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
+				<span class="hidden sm:inline">{connected ? 'Connected' : 'Disconnected'}</span>
 			</span>
 			{#if inputMode === 'wheel'}
 				<button onclick={() => showCalibration = true}
-					class="px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition-colors">
-					Calibrate
+					class="px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition-colors">
+					Cal
 				</button>
 			{/if}
 		</div>
@@ -241,19 +239,19 @@
 			<HudOverlay telemetry={currentTelemetry} isRecording={true} />
 
 			<!-- Input mode indicator -->
-			<div class="absolute top-4 left-4 z-20 px-3 py-1.5 bg-black/60 rounded-lg text-xs text-gray-300 pointer-events-none">
+			<div class="absolute top-1 sm:top-2 left-1 sm:left-2 z-20 px-2 py-1 bg-black/60 rounded text-[10px] sm:text-xs text-gray-300 pointer-events-none">
 				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 			</div>
 
 			<!-- Top-right buttons -->
-			<div class="absolute top-4 right-4 z-20 flex gap-2 pointer-events-auto">
+			<div class="absolute top-1 sm:top-2 right-1 sm:right-2 z-20 flex gap-1 sm:gap-2 pointer-events-auto">
 				<button onclick={() => respawnVehicle()}
-					class="px-4 py-2 bg-blue-600/80 hover:bg-blue-600 rounded-lg text-sm font-medium text-white transition-colors">
-					Respawn (R)
+					class="px-2 sm:px-4 py-1 sm:py-2 bg-blue-600/80 hover:bg-blue-600 rounded-lg text-[10px] sm:text-sm font-medium text-white transition-colors">
+					Respawn
 				</button>
 				<button onclick={handleEndSession}
-					class="px-4 py-2 bg-red-600/80 hover:bg-red-600 rounded-lg text-sm font-medium text-white transition-colors">
-					End Session (Esc)
+					class="px-2 sm:px-4 py-1 sm:py-2 bg-red-600/80 hover:bg-red-600 rounded-lg text-[10px] sm:text-sm font-medium text-white transition-colors">
+					End
 				</button>
 			</div>
 
