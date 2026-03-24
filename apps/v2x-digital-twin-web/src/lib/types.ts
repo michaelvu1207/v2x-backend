@@ -50,4 +50,51 @@ export interface DetectionPage {
 	next?: string | null;
 }
 
+export interface DemoVideo {
+	key: string;
+	fileName: string;
+	title: string;
+	url: string;
+	sizeBytes: number;
+	lastModified: string | null;
+	contentType: string;
+}
+
 export type FreshnessLevel = 'fresh' | 'stale' | 'old';
+
+// ── Drive Mode Types ──
+
+export type CameraView = 'chase' | 'hood' | 'bird' | 'free';
+
+export type DriveSessionState =
+	| 'idle'
+	| 'connecting'
+	| 'reconstructing'
+	| 'ready'
+	| 'driving'
+	| 'ending'
+	| 'error';
+
+export interface VehicleTelemetry {
+	speed: number;
+	gear: number;
+	pos: [number, number, number];
+	rot: [number, number, number];
+	steer: number;
+	throttle: number;
+	brake: number;
+}
+
+export interface GamepadCalibration {
+	steerAxis: number;
+	gasAxis: number;
+	brakeAxis: number;
+	steerInverted: boolean;
+	gasInverted: boolean;
+	brakeInverted: boolean;
+}
+
+export interface DriveMessage {
+	type: string;
+	[key: string]: unknown;
+}

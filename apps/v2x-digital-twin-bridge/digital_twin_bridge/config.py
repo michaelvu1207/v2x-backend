@@ -46,6 +46,12 @@ class Config:
     # GraphQL / AppSync (Phase 3)
     GRAPHQL_ENDPOINT: str = ""
 
+    # Drive server settings
+    WS_PORT: int = 8765
+    VEHICLE_BLUEPRINT: str = "vehicle.tesla.model3"
+    WEBRTC_PORT: int = 8766
+    SESSION_DIR: str = "sessions/"
+
     # Logging
     LOG_LEVEL: str = "INFO"
 

@@ -27,3 +27,28 @@ export const SNAPSHOT_PLACEHOLDER =
 			'<text fill="#6b7280" font-family="system-ui" font-size="14" text-anchor="middle" x="160" y="125">No snapshot available</text>' +
 			'</svg>'
 	);
+
+// ── Drive Mode Constants ──
+
+export const DRIVE_WS_URL: string =
+	import.meta.env.VITE_DRIVE_WS_URL ?? 'wss://path-b860i-aorus-pro-ice.tail1cad6a.ts.net';
+
+export const GAMEPAD_DEADZONE = 0.005;
+
+export const GAMEPAD_POLL_RATE = 60;
+
+export const DEFAULT_CALIBRATION = {
+	steerAxis: 0,
+	gasAxis: 1,
+	brakeAxis: 2,
+	steerInverted: false,
+	gasInverted: false,
+	brakeInverted: true,
+};
+
+export const CAMERA_VIEWS = [
+	{ id: 'chase', label: 'Chase', key: '1' },
+	{ id: 'hood', label: 'Hood', key: '2' },
+	{ id: 'bird', label: "Bird's Eye", key: '3' },
+	{ id: 'free', label: 'Free Look', key: '4' },
+] as const;

@@ -1,0 +1,397 @@
+"""
+Shared pytest fixtures for the Digital Twin Drive Server tests.
+
+Provides mock CARLA objects, mock WebSocket, and fake V2X API
+so unit tests run fast without real CARLA or network access.
+"""
+
+import json
+import asyncio
+import time
+from dataclasses import dataclass, field
+from typing import Any, Optional
+from unittest.mock import MagicMock
+
+import pytest
+
+
+# ──────────────────────────────────────────────────────────────
+# Mock CARLA types
+# ──────────────────────────────────────────────────────────────
+
+@dataclass
+class MockLocation:
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+
+@dataclass
+class MockRotation:
+    pitch: float = 0.0
+    yaw: float = 0.0
+    roll: float = 0.0
+
+
+@dataclass
+class MockTransform:
+    location: MockLocation = field(default_factory=MockLocation)
+    rotation: MockRotation = field(default_factory=MockRotation)
+
+    def get_forward_vector(self):
+        import math
+        yaw_rad = math.radians(self.rotation.yaw)
+        return MockLocation(x=math.cos(yaw_rad), y=math.sin(yaw_rad), z=0.0)
+
+
+@dataclass
+class MockVehicleControl:
+    throttle: float = 0.0
+    steer: float = 0.0
+    brake: float = 0.0
+    hand_brake: bool = False
+    reverse: bool = False
+    manual_gear_shift: bool = False
+    gear: int = 0
+
+
+class MockVehiclePhysicsControl:
+    max_rpm = 6000.0
+
+
+class MockActor:
+    """Mock CARLA actor (vehicle or prop)."""
+
+    def __init__(self, actor_id: int, type_id: str = "vehicle.tesla.model3"):
+        self.id = actor_id
+        self.type_id = type_id
+        self._transform = MockTransform()
+        self._control = MockVehicleControl()
+        self._velocity = MockLocation(x=0, y=0, z=0)
+        self._destroyed = False
+        self.control_history: list[MockVehicleControl] = []
+
+    def get_transform(self) -> MockTransform:
+        return self._transform
+
+    def get_velocity(self) -> MockLocation:
+        return self._velocity
+
+    def get_control(self) -> MockVehicleControl:
+        return self._control
+
+    def get_physics_control(self) -> MockVehiclePhysicsControl:
+        return MockVehiclePhysicsControl()
+
+    def apply_control(self, control: MockVehicleControl) -> None:
+        self._control = control
+        self.control_history.append(MockVehicleControl(
+            throttle=control.throttle,
+            steer=control.steer,
+            brake=control.brake,
+            hand_brake=control.hand_brake,
+            reverse=control.reverse,
+            gear=control.gear,
+        ))
+
+    def set_transform(self, transform: MockTransform) -> None:
+        self._transform = transform
+
+    def destroy(self) -> bool:
+        self._destroyed = True
+        return True
+
+    @property
+    def is_destroyed(self) -> bool:
+        return self._destroyed
+
+
+class MockBlueprint:
+    def __init__(self, bp_id: str):
+        self.id = bp_id
+
+    def set_attribute(self, key: str, value: str) -> None:
+        pass
+
+
+class MockBlueprintLibrary:
+    def __init__(self):
+        self._blueprints = {
+            "vehicle.tesla.model3": MockBlueprint("vehicle.tesla.model3"),
+            "static.prop.trafficcone01": MockBlueprint("static.prop.trafficcone01"),
+            "static.prop.trafficwarning": MockBlueprint("static.prop.trafficwarning"),
+            "sensor.camera.rgb": MockBlueprint("sensor.camera.rgb"),
+        }
+
+    def filter(self, pattern: str) -> list[MockBlueprint]:
+        return [bp for key, bp in self._blueprints.items() if pattern in key]
+
+    def find(self, bp_id: str) -> Optional[MockBlueprint]:
+        return self._blueprints.get(bp_id)
+
+
+class MockGeoLocation:
+    def __init__(self, latitude=0.0, longitude=0.0, altitude=0.0):
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+
+
+class MockWaypoint:
+    def __init__(self, transform=None):
+        self.transform = transform or MockTransform()
+
+
+class MockMap:
+    def __init__(self, name: str = "TestMap"):
+        self.name = name
+        self._origin_lat = 37.915
+        self._origin_lon = -122.335
+
+    def get_spawn_points(self) -> list[MockTransform]:
+        return [
+            MockTransform(MockLocation(100, 200, 0), MockRotation(0, 0, 0)),
+            MockTransform(MockLocation(150, 250, 0), MockRotation(0, 90, 0)),
+        ]
+
+    def transform_to_geolocation(self, location: MockLocation) -> MockGeoLocation:
+        return MockGeoLocation(latitude=self._origin_lat, longitude=self._origin_lon)
+
+    def geolocation_to_transform(self, geo: MockGeoLocation) -> MockTransform:
+        # Simplified: just return a transform near origin
+        return MockTransform(MockLocation(x=100.0, y=200.0, z=0.0))
+
+    def get_waypoint(self, location, project_to_road=True):
+        return MockWaypoint(MockTransform(
+            MockLocation(location.x, location.y, 0.1)
+        ))
+
+
+@dataclass
+class MockWorldSettings:
+    synchronous_mode: bool = False
+    fixed_delta_seconds: float = 0.05
+
+
+class MockWorld:
+    """Mock CARLA world that tracks spawned actors and applied controls."""
+
+    def __init__(self):
+        self._actors: dict[int, MockActor] = {}
+        self._next_id = 1
+        self._settings = MockWorldSettings()
+        self._map = MockMap()
+        self._tick_count = 0
+        self._blueprint_library = MockBlueprintLibrary()
+
+    def get_map(self) -> MockMap:
+        return self._map
+
+    def get_settings(self) -> MockWorldSettings:
+        return MockWorldSettings(
+            synchronous_mode=self._settings.synchronous_mode,
+            fixed_delta_seconds=self._settings.fixed_delta_seconds,
+        )
+
+    def apply_settings(self, settings: MockWorldSettings) -> None:
+        self._settings.synchronous_mode = settings.synchronous_mode
+        self._settings.fixed_delta_seconds = settings.fixed_delta_seconds
+
+    def get_blueprint_library(self) -> MockBlueprintLibrary:
+        return self._blueprint_library
+
+    def get_spectator(self) -> MockActor:
+        if 0 not in self._actors:
+            self._actors[0] = MockActor(0, "spectator")
+        return self._actors[0]
+
+    def try_spawn_actor(self, blueprint, transform, attach_to=None) -> Optional[MockActor]:
+        actor = MockActor(self._next_id, getattr(blueprint, "id", "unknown"))
+        self._actors[actor.id] = actor
+        actor._transform = transform
+        self._next_id += 1
+        return actor
+
+    def spawn_actor(self, blueprint, transform, attach_to=None) -> MockActor:
+        actor = self.try_spawn_actor(blueprint, transform, attach_to)
+        if actor is None:
+            raise RuntimeError("Failed to spawn actor")
+        return actor
+
+    def get_actor(self, actor_id: int) -> Optional[MockActor]:
+        return self._actors.get(actor_id)
+
+    def get_actors(self):
+        """Return mock actor list with filter support."""
+        actors = list(self._actors.values())
+        mock_list = MagicMock()
+        mock_list.filter = lambda pattern: [
+            a for a in actors if pattern.replace("*", "") in a.type_id
+        ]
+        mock_list.__iter__ = lambda self_: iter(actors)
+        mock_list.__len__ = lambda self_: len(actors)
+        return mock_list
+
+    def tick(self) -> int:
+        self._tick_count += 1
+        return self._tick_count
+
+    def ground_projection(self, location, search_distance=10.0):
+        """Mock ground projection — just return the location with z=0."""
+        result = MagicMock()
+        result.location = MockLocation(location.x, location.y, 0.1)
+        return result
+
+    @property
+    def spawned_actors(self) -> list[MockActor]:
+        return [a for a in self._actors.values() if a.id != 0]
+
+
+class MockClient:
+    """Mock CARLA client."""
+
+    def __init__(self, world: Optional[MockWorld] = None):
+        self._world = world or MockWorld()
+        self._timeout = 10.0
+
+    def get_world(self) -> MockWorld:
+        return self._world
+
+    def set_timeout(self, seconds: float) -> None:
+        self._timeout = seconds
+
+
+# ──────────────────────────────────────────────────────────────
+# Mock WebSocket
+# ──────────────────────────────────────────────────────────────
+
+class MockWebSocket:
+    """Mock WebSocket that records sent messages and allows injecting received messages."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+        self._recv_queue: asyncio.Queue = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, message: str) -> None:
+        if self.closed:
+            raise ConnectionError("WebSocket is closed")
+        self.sent.append(message)
+
+    async def recv(self) -> str:
+        if self.closed:
+            raise ConnectionError("WebSocket is closed")
+        return await self._recv_queue.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def inject(self, message: str) -> None:
+        """Inject a message as if the client sent it."""
+        await self._recv_queue.put(message)
+
+    def get_sent_json(self) -> list[dict]:
+        """Return all sent messages parsed as JSON."""
+        return [json.loads(m) for m in self.sent]
+
+    def last_sent_json(self) -> Optional[dict]:
+        if not self.sent:
+            return None
+        return json.loads(self.sent[-1])
+
+
+# ──────────────────────────────────────────────────────────────
+# Fake V2X API
+# ──────────────────────────────────────────────────────────────
+
+SAMPLE_DETECTIONS = [
+    {
+        "object_id": "traffic_cone_001",
+        "object_type": "traffic_cone",
+        "gps_location": {"latitude": 37.91542, "longitude": -122.33492},
+        "confidence_score": 0.95,
+        "timestamp_utc": "2026-03-22T17:03:12Z",
+        "street_name_normalized": "University Ave",
+        "ts_event": "2026-03-22T17:03:12Z#traffic_cone_001_1",
+        "event_id": "evt_001",
+    },
+    {
+        "object_id": "traffic_cone_002",
+        "object_type": "traffic_cone",
+        "gps_location": {"latitude": 37.91550, "longitude": -122.33480},
+        "confidence_score": 0.88,
+        "timestamp_utc": "2026-03-22T17:05:30Z",
+        "street_name_normalized": "University Ave",
+        "ts_event": "2026-03-22T17:05:30Z#traffic_cone_002_1",
+        "event_id": "evt_002",
+    },
+    {
+        "object_id": "traffic_cone_001",
+        "object_type": "traffic_cone",
+        "gps_location": {"latitude": 37.91543, "longitude": -122.33491},
+        "confidence_score": 0.97,
+        "timestamp_utc": "2026-03-22T17:08:45Z",
+        "street_name_normalized": "University Ave",
+        "ts_event": "2026-03-22T17:08:45Z#traffic_cone_001_2",
+        "event_id": "evt_003",
+    },
+]
+
+
+class FakeV2XApi:
+    """Fake V2X API server for testing scene reconstruction."""
+
+    def __init__(self, detections: Optional[list[dict]] = None):
+        self.detections = detections if detections is not None else SAMPLE_DETECTIONS
+        self.call_count = 0
+        self.last_params: dict = {}
+
+    def get_detections_range(self, start: str, end: str, limit: int = 500) -> dict:
+        self.call_count += 1
+        self.last_params = {"start": start, "end": end, "limit": limit}
+        # Filter by time range
+        filtered = [
+            d for d in self.detections
+            if start <= d["timestamp_utc"] <= end
+        ]
+        return {"items": filtered[:limit], "count": len(filtered[:limit])}
+
+
+# ──────────────────────────────────────────────────────────────
+# Pytest fixtures
+# ──────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def mock_world():
+    """Fresh MockWorld for each test."""
+    return MockWorld()
+
+
+@pytest.fixture
+def mock_client(mock_world):
+    """MockClient wrapping a MockWorld."""
+    return MockClient(mock_world)
+
+
+@pytest.fixture
+def mock_websocket():
+    """Fresh MockWebSocket for each test."""
+    return MockWebSocket()
+
+
+@pytest.fixture
+def fake_v2x_api():
+    """FakeV2XApi with sample detections."""
+    return FakeV2XApi()
+
+
+@pytest.fixture
+def empty_v2x_api():
+    """FakeV2XApi with no detections."""
+    return FakeV2XApi(detections=[])
+
+
+@pytest.fixture
+def sample_detections():
+    """Raw sample detection data."""
+    return SAMPLE_DETECTIONS.copy()
