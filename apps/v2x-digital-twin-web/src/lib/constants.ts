@@ -39,14 +39,14 @@ export const GAMEPAD_POLL_RATE = 60;
 
 // Logitech G29/G920/G923 defaults (3-pedal):
 // Axis 0 = steering, Axis 2 = gas (right pedal), Axis 3 = brake (middle pedal)
-// All pedals rest at 1.0, pressed = -1.0, so all need inversion
+// Pedals rest at -1.0, pressed = 1.0 → normalize with (raw + 1) / 2
 export const DEFAULT_CALIBRATION = {
 	steerAxis: 0,
 	gasAxis: 2,
 	brakeAxis: 3,
 	steerInverted: false,
-	gasInverted: true,
-	brakeInverted: true,
+	gasInverted: false,
+	brakeInverted: false,
 };
 
 export const CAMERA_VIEWS = [
