@@ -139,7 +139,31 @@ function onGamepadConnected(e: GamepadEvent) {
 	gamepadIndex.set(e.gamepad.index);
 	gamepadConnected.set(true);
 	gamepadName.set(e.gamepad.id);
+
+	// Log all axis resting values for debugging
+	const axes = [...e.gamepad.axes];
 	console.log(`[Gamepad] Connected: ${e.gamepad.id} (${e.gamepad.axes.length} axes, ${e.gamepad.buttons.length} buttons)`);
+	console.log(`[Gamepad] Resting axis values:`, axes.map((v, i) => `${i}=${v.toFixed(3)}`).join(', '));
+
+	// Auto-detect pedal inversion from resting values
+	const cal = get(calibration);
+	const gasRest = axes[cal.gasAxis] ?? 0;
+	const brakeRest = axes[cal.brakeAxis] ?? 0;
+
+	// If pedals rest near +1.0, they need inversion (1→-1 range)
+	// If pedals rest near -1.0, they don't (−1→+1 range)
+	// If pedals rest near 0, they're probably 0→1 range (no inversion)
+	const gasNeedsInvert = gasRest > 0.5;
+	const brakeNeedsInvert = brakeRest > 0.5;
+
+	if (gasNeedsInvert !== cal.gasInverted || brakeNeedsInvert !== cal.brakeInverted) {
+		console.log(`[Gamepad] Auto-adjusting inversion: gas=${gasNeedsInvert}, brake=${brakeNeedsInvert} (resting: gas=${gasRest.toFixed(2)}, brake=${brakeRest.toFixed(2)})`);
+		calibration.set({
+			...cal,
+			gasInverted: gasNeedsInvert,
+			brakeInverted: brakeNeedsInvert,
+		});
+	}
 }
 
 function onGamepadDisconnected(e: GamepadEvent) {
