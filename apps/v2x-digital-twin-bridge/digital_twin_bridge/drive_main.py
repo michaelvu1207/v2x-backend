@@ -53,6 +53,9 @@ async def main():
     for actor in world.get_actors().filter("vehicle.*"):
         logger.info("Cleaning up leftover vehicle: %s (id=%d)", actor.type_id, actor.id)
         actor.destroy()
+    for actor in world.get_actors().filter("sensor.*"):
+        logger.info("Cleaning up leftover sensor: %s (id=%d)", actor.type_id, actor.id)
+        actor.destroy()
 
     # Switch to async mode for real-time driving
     settings = world.get_settings()
