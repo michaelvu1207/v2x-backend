@@ -49,6 +49,32 @@ export interface NormalizedInput {
 	reverse: boolean;
 }
 
+// Pedal rest values detected on connect — used for normalization
+let gasRestValue = 0;
+let brakeRestValue = 0;
+
+/**
+ * Normalize a pedal axis value to 0 (released) → 1 (pressed).
+ * Handles three pedal ranges based on the detected resting value:
+ *   rest ≈ 0  → range is 0..1, use raw directly
+ *   rest ≈ -1 → range is -1..1, use (raw + 1) / 2
+ *   rest ≈ +1 → range is 1..-1, use (1 - raw) / 2
+ */
+function normalizePedal(raw: number, inverted: boolean, restValue: number): number {
+	let value: number;
+	if (Math.abs(restValue) < 0.3) {
+		// Pedal rests near 0 → 0..1 range, use raw directly
+		value = raw;
+	} else if (inverted) {
+		// Pedal rests near +1 → 1..-1 range
+		value = (1 - raw) / 2;
+	} else {
+		// Pedal rests near -1 → -1..1 range
+		value = (raw + 1) / 2;
+	}
+	return Math.max(0, Math.min(1, value));
+}
+
 export const normalizedInput = derived(
 	[rawAxes, calibration],
 	([$rawAxes, $calibration]): NormalizedInput => {
@@ -65,14 +91,10 @@ export const normalizedInput = derived(
 		if (Math.abs(steer) < GAMEPAD_DEADZONE) steer = 0;
 		steer = Math.max(-1, Math.min(1, steer));
 
-		// Pedals: raw is typically 1 (released) to -1 (pressed)
-		// Normalize to 0 (released) to 1 (pressed)
-		let throttle = $calibration.gasInverted ? (1 - rawGas) / 2 : (rawGas + 1) / 2;
-		let brake = $calibration.brakeInverted ? (1 - rawBrake) / 2 : (rawBrake + 1) / 2;
+		// Normalize pedals to 0 (released) → 1 (pressed)
+		let throttle = normalizePedal(rawGas, $calibration.gasInverted, gasRestValue);
+		let brake = normalizePedal(rawBrake, $calibration.brakeInverted, brakeRestValue);
 
-		// Clamp and deadzone
-		throttle = Math.max(0, Math.min(1, throttle));
-		brake = Math.max(0, Math.min(1, brake));
 		if (throttle < GAMEPAD_DEADZONE) throttle = 0;
 		if (brake < GAMEPAD_DEADZONE) brake = 0;
 
@@ -145,25 +167,30 @@ function onGamepadConnected(e: GamepadEvent) {
 	console.log(`[Gamepad] Connected: ${e.gamepad.id} (${e.gamepad.axes.length} axes, ${e.gamepad.buttons.length} buttons)`);
 	console.log(`[Gamepad] Resting axis values:`, axes.map((v, i) => `${i}=${v.toFixed(3)}`).join(', '));
 
-	// Auto-detect pedal inversion from resting values
+	// Auto-detect pedal range from resting values
 	const cal = get(calibration);
-	const gasRest = axes[cal.gasAxis] ?? 0;
-	const brakeRest = axes[cal.brakeAxis] ?? 0;
+	gasRestValue = axes[cal.gasAxis] ?? 0;
+	brakeRestValue = axes[cal.brakeAxis] ?? 0;
 
-	// If pedals rest near +1.0, they need inversion (1→-1 range)
-	// If pedals rest near -1.0, they don't (−1→+1 range)
-	// If pedals rest near 0, they're probably 0→1 range (no inversion)
-	const gasNeedsInvert = gasRest > 0.5;
-	const brakeNeedsInvert = brakeRest > 0.5;
+	// Detect inversion based on resting position:
+	//   rest ≈ +1.0 → pedal goes 1 to -1 → needs inversion
+	//   rest ≈ -1.0 → pedal goes -1 to 1 → no inversion
+	//   rest ≈  0.0 → pedal goes 0 to 1  → no inversion (raw works directly)
+	const gasNeedsInvert = gasRestValue > 0.5;
+	const brakeNeedsInvert = brakeRestValue > 0.5;
 
-	if (gasNeedsInvert !== cal.gasInverted || brakeNeedsInvert !== cal.brakeInverted) {
-		console.log(`[Gamepad] Auto-adjusting inversion: gas=${gasNeedsInvert}, brake=${brakeNeedsInvert} (resting: gas=${gasRest.toFixed(2)}, brake=${brakeRest.toFixed(2)})`);
-		calibration.set({
-			...cal,
-			gasInverted: gasNeedsInvert,
-			brakeInverted: brakeNeedsInvert,
-		});
-	}
+	// For pedals that rest at 0 (0..1 range), neither formula is right.
+	// We need to detect this and just use raw value.
+	const gasIs01Range = Math.abs(gasRestValue) < 0.3;
+	const brakeIs01Range = Math.abs(brakeRestValue) < 0.3;
+
+	console.log(`[Gamepad] Pedal analysis: gas rest=${gasRestValue.toFixed(3)} (${gasIs01Range ? '0-1 range' : gasNeedsInvert ? '1→-1 range' : '-1→1 range'}), brake rest=${brakeRestValue.toFixed(3)} (${brakeIs01Range ? '0-1 range' : brakeNeedsInvert ? '1→-1 range' : '-1→1 range'})`);
+
+	calibration.set({
+		...cal,
+		gasInverted: gasNeedsInvert,
+		brakeInverted: brakeNeedsInvert,
+	});
 }
 
 function onGamepadDisconnected(e: GamepadEvent) {
