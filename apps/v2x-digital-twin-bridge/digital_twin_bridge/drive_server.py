@@ -61,11 +61,17 @@ class DriveSession:
         if not vehicle_bps:
             raise RuntimeError("Vehicle blueprint not found")
 
+        import random
         spawn_points = self._map.get_spawn_points()
         if not spawn_points:
             raise RuntimeError("No spawn points available")
 
-        self.vehicle = self._world.try_spawn_actor(vehicle_bps[0], spawn_points[0])
+        random.shuffle(spawn_points)
+        self.vehicle = None
+        for sp in spawn_points:
+            self.vehicle = self._world.try_spawn_actor(vehicle_bps[0], sp)
+            if self.vehicle is not None:
+                break
         if self.vehicle is None:
             raise RuntimeError("Failed to spawn vehicle")
 
