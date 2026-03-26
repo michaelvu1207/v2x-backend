@@ -6,7 +6,7 @@
  */
 
 import { writable, get } from 'svelte/store';
-import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage } from '$lib/types';
+import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo } from '$lib/types';
 
 // ── Stores ──
 
@@ -31,13 +31,15 @@ export const telemetry = writable<VehicleTelemetry>({
 export const lastError = writable<string | null>(null);
 export const vehicleId = writable<number | null>(null);
 export const objectsCount = writable<number>(0);
+export const vehicleList = writable<VehicleOption[]>([]);
+export const spawnableObjects = writable<SpawnableObject[]>([]);
+export const placedObjects = writable<PlacedObject[]>([]);
+export const placedCount = writable<number>(0);
+export const scenarioList = writable<ScenarioInfo[]>([]);
 
 // ── WebSocket ──
 
 let ws: WebSocket | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let reconnectAttempt = 0;
-const MAX_RECONNECT_DELAY = 8000;
 
 export function connect(wsUrl: string): void {
 	if (ws && ws.readyState === WebSocket.OPEN) return;
@@ -50,7 +52,6 @@ export function connect(wsUrl: string): void {
 
 	ws.onopen = () => {
 		driveConnected.set(true);
-		reconnectAttempt = 0;
 		console.log('[DriveWS] Connected');
 	};
 
@@ -76,12 +77,14 @@ export function connect(wsUrl: string): void {
 		driveConnected.set(false);
 		console.log('[DriveWS] Disconnected');
 
-		// Auto-reconnect if we were in an active session
+		// Don't auto-reconnect — it creates zombie state where the frontend
+		// thinks it has a session but the server already cleaned up.
+		// Just reset to idle and let the user start fresh.
 		const state = get(sessionState);
-		if (state === 'driving' || state === 'ready') {
-			scheduleReconnect(wsUrl);
-		} else {
+		if (state !== 'idle') {
+			console.log('[DriveWS] Session lost — resetting to idle');
 			sessionState.set('idle');
+			vehicleId.set(null);
 		}
 	};
 
@@ -92,23 +95,13 @@ export function connect(wsUrl: string): void {
 }
 
 export function disconnect(): void {
-	if (reconnectTimer) {
-		clearTimeout(reconnectTimer);
-		reconnectTimer = null;
-	}
 	if (ws) {
 		ws.close();
 		ws = null;
 	}
 	driveConnected.set(false);
 	sessionState.set('idle');
-}
-
-function scheduleReconnect(wsUrl: string): void {
-	const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), MAX_RECONNECT_DELAY);
-	reconnectAttempt++;
-	console.log(`[DriveWS] Reconnecting in ${delay}ms (attempt ${reconnectAttempt})`);
-	reconnectTimer = setTimeout(() => connect(wsUrl), delay);
+	vehicleId.set(null);
 }
 
 // ── Message Handling ──
@@ -132,6 +125,49 @@ function handleServerMessage(msg: DriveMessage): void {
 		case 'session_ended':
 			sessionState.set('idle');
 			vehicleId.set(null);
+			break;
+
+		case 'vehicle_list':
+			vehicleList.set((msg.vehicles as VehicleOption[]) ?? []);
+			break;
+
+		case 'object_list':
+			spawnableObjects.set((msg.objects as SpawnableObject[]) ?? []);
+			break;
+
+		case 'object_spawned':
+			placedObjects.update(list => [...list, {
+				actor_id: msg.actor_id as number,
+				blueprint: msg.blueprint as string,
+				pos: msg.pos as [number, number, number],
+			}]);
+			placedCount.set(msg.placed_count as number);
+			break;
+
+		case 'object_removed':
+			placedObjects.update(list => list.slice(0, -1));
+			placedCount.set(msg.placed_count as number);
+			break;
+
+		case 'undo_empty':
+			// Nothing to undo — no state change
+			break;
+
+		case 'scenario_list':
+			scenarioList.set((msg.scenarios as ScenarioInfo[]) ?? []);
+			break;
+
+		case 'scenario_saved':
+			// Refresh scenario list after save
+			requestScenarios();
+			break;
+
+		case 'scenario_loaded':
+			placedCount.set(msg.placed_count as number);
+			break;
+
+		case 'scenario_deleted':
+			requestScenarios();
 			break;
 
 		case 'camera_switched':
@@ -158,13 +194,19 @@ function send(msg: DriveMessage): void {
 	}
 }
 
-export function startSession(start: string, end: string): void {
+export function requestVehicles(): void {
+	send({ type: 'list_vehicles' });
+}
+
+export function startSession(start: string, end: string, vehicle?: string): void {
 	sessionState.set('reconstructing');
 	lastError.set(null);
-	send({ type: 'start_session', start, end });
+	send({ type: 'start_session', start, end, vehicle: vehicle ?? 'vehicle.tesla.model3' });
 }
 
 export function sendControl(steer: number, throttle: number, brake: number, reverse: boolean = false): void {
+	// Don't send control if not actively driving
+	if (get(sessionState) !== 'driving') return;
 	send({ type: 'control', s: steer, t: throttle, b: brake, rev: reverse });
 }
 
@@ -174,6 +216,34 @@ export function switchCamera(view: CameraView): void {
 
 export function respawnVehicle(): void {
 	send({ type: 'respawn' });
+}
+
+export function requestObjects(): void {
+	send({ type: 'list_objects' });
+}
+
+export function spawnObject(blueprint: string, offset: number = 8.0): void {
+	send({ type: 'spawn_object', blueprint, offset });
+}
+
+export function undoPlace(): void {
+	send({ type: 'undo_place' });
+}
+
+export function requestScenarios(): void {
+	send({ type: 'list_scenarios' });
+}
+
+export function saveScenario(name: string): void {
+	send({ type: 'save_scenario', name });
+}
+
+export function loadScenario(file: string): void {
+	send({ type: 'load_scenario', file });
+}
+
+export function deleteScenario(file: string): void {
+	send({ type: 'delete_scenario', file });
 }
 
 export function endSession(): void {

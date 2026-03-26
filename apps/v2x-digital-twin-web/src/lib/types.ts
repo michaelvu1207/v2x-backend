@@ -94,6 +94,30 @@ export interface GamepadCalibration {
 	brakeInverted: boolean;
 }
 
+export interface VehicleOption {
+	id: string;
+	name: string;
+	wheels: number;
+}
+
+export interface SpawnableObject {
+	id: string;
+	name: string;
+	category: 'vehicle' | 'prop';
+}
+
+export interface PlacedObject {
+	actor_id: number;
+	blueprint: string;
+	pos: [number, number, number];
+}
+
+export interface ScenarioInfo {
+	name: string;
+	file: string;
+	object_count: number;
+}
+
 export interface DriveMessage {
 	type: string;
 	[key: string]: unknown;

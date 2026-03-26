@@ -69,11 +69,54 @@ async def main():
     async def handler(websocket):
         await serve_drive(websocket, world, carla_map, api_fetcher)
 
+    async def periodic_actor_audit():
+        """Every 60s, check for orphaned actors when no sessions are active."""
+        from digital_twin_bridge.drive_server import _active_sessions
+        while True:
+            await asyncio.sleep(60)
+            if _active_sessions:
+                continue  # Sessions active, don't interfere
+            try:
+                vehicles = world.get_actors().filter("vehicle.*")
+                sensors = world.get_actors().filter("sensor.*")
+                orphaned = len(vehicles) + len(sensors)
+                if orphaned > 0:
+                    logger.warning(
+                        "Actor audit: %d orphaned actors found (vehicles=%d, sensors=%d). Cleaning up.",
+                        orphaned, len(vehicles), len(sensors),
+                    )
+                    for a in sensors:
+                        try:
+                            a.stop()
+                        except Exception:
+                            pass
+                        try:
+                            a.destroy()
+                        except Exception:
+                            pass
+                    for a in vehicles:
+                        try:
+                            a.destroy()
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("Actor audit error: %s", e)
+
     port = config.WS_PORT
     logger.info("Starting drive server on ws://0.0.0.0:%d", port)
 
     try:
-        async with websockets.serve(handler, "0.0.0.0", port):
+        # Start periodic orphan cleanup
+        audit_task = asyncio.create_task(periodic_actor_audit())
+
+        async with websockets.serve(
+            handler,
+            "0.0.0.0",
+            port,
+            ping_interval=5,     # Send ping every 5s
+            ping_timeout=15,     # Close if no pong within 15s
+            close_timeout=5,     # Wait max 5s for close handshake
+        ):
             logger.info("Drive server ready. Waiting for connections...")
             await asyncio.Future()
     finally:

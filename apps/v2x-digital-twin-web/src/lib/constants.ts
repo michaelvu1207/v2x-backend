@@ -30,8 +30,23 @@ export const SNAPSHOT_PLACEHOLDER =
 
 // ── Drive Mode Constants ──
 
+export const DRIVE_TUNNELS = [
+	{
+		id: 'tailscale',
+		label: 'Tailscale',
+		url: 'wss://path-b860i-aorus-pro-ice.tail1cad6a.ts.net',
+	},
+	{
+		id: 'cloudflare',
+		label: 'Cloudflare',
+		url: 'wss://fall-showing-mats-hunting.trycloudflare.com',
+	},
+] as const;
+
+export type TunnelId = (typeof DRIVE_TUNNELS)[number]['id'];
+
 export const DRIVE_WS_URL: string =
-	import.meta.env.VITE_DRIVE_WS_URL ?? 'wss://path-b860i-aorus-pro-ice.tail1cad6a.ts.net';
+	import.meta.env.VITE_DRIVE_WS_URL ?? DRIVE_TUNNELS[0].url;
 
 export const GAMEPAD_DEADZONE = 0.005;
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { DRIVE_WS_URL } from '$lib/constants';
+	import { DRIVE_TUNNELS, type TunnelId } from '$lib/constants';
 	import type { CameraView } from '$lib/types';
 
 	import {
@@ -23,6 +23,10 @@
 		telemetry,
 		lastError,
 		objectsCount,
+		vehicleList,
+		spawnableObjects,
+		placedCount,
+		scenarioList,
 		connect,
 		disconnect,
 		startSession,
@@ -30,6 +34,13 @@
 		switchCamera,
 		endSession,
 		respawnVehicle,
+		requestVehicles,
+		requestObjects,
+		requestScenarios,
+		saveScenario,
+		loadScenario,
+		spawnObject,
+		undoPlace,
 		setOnFrame,
 	} from '$lib/stores/driveSocket';
 
@@ -44,6 +55,38 @@
 	let controlLoopId = $state<number | null>(null);
 	let inputMode = $state<InputMode>('keyboard');
 	let cameraViewRef = $state<CameraViewComponent | null>(null);
+	let selectedTunnel = $state<TunnelId>(DRIVE_TUNNELS[0].id);
+	let selectedVehicle = $state('vehicle.tesla.model3');
+	let showObjectPlacer = $state(false);
+	let objectFilter = $state('');
+	let selectedScenario = $state('');
+	let showSaveDialog = $state(false);
+	let scenarioName = $state('');
+
+	let vehicles = $derived($vehicleList);
+	let objects = $derived($spawnableObjects);
+	let scenarios = $derived($scenarioList);
+	let numPlaced = $derived($placedCount);
+	let filteredObjects = $derived(
+		objects.filter(o =>
+			objectFilter === '' ||
+			o.name.toLowerCase().includes(objectFilter.toLowerCase()) ||
+			o.id.toLowerCase().includes(objectFilter.toLowerCase())
+		)
+	);
+
+	function getSelectedUrl(): string {
+		return DRIVE_TUNNELS.find(t => t.id === selectedTunnel)?.url ?? DRIVE_TUNNELS[0].url;
+	}
+
+	function switchTunnel(id: TunnelId) {
+		if (id === selectedTunnel) return;
+		selectedTunnel = id;
+		// Reconnect with the new URL — clear vehicle list so it re-fetches
+		vehicleList.set([]);
+		disconnect();
+		connect(getSelectedUrl());
+	}
 
 	let connected = $derived($driveConnected);
 	let state = $derived($sessionState);
@@ -57,10 +100,29 @@
 		}
 	});
 
+	function cleanupSession() {
+		stopControlLoop();
+		stopPolling();
+		stopKeyboardInput();
+		setOnFrame(null);
+		if (state === 'driving' || state === 'ready' || state === 'reconstructing') {
+			endSession();
+		}
+		disconnect();
+	}
+
+	// Request vehicle list and scenarios once connected
+	$effect(() => {
+		if ($driveConnected && $vehicleList.length === 0) {
+			requestVehicles();
+			requestScenarios();
+		}
+	});
+
 	onMount(() => {
 		startPolling();
 		startKeyboardInput();
-		connect(DRIVE_WS_URL);
+		connect(getSelectedUrl());
 
 		setOnFrame((blob: Blob) => {
 			if (cameraViewRef) {
@@ -70,20 +132,29 @@
 	});
 
 	onDestroy(() => {
-		stopControlLoop();
-		stopPolling();
-		stopKeyboardInput();
-		setOnFrame(null);
-		if (state === 'driving' || state === 'ready') {
-			endSession();
+		cleanupSession();
+	});
+
+	// Auto-load scenario when session becomes driving
+	$effect(() => {
+		if ($sessionState === 'driving' && selectedScenario) {
+			loadScenario(selectedScenario);
+			selectedScenario = '';
 		}
-		disconnect();
 	});
 
 	function handleQuickStart() {
 		const now = new Date();
 		const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-		startSession(oneHourAgo.toISOString(), now.toISOString());
+		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle);
+	}
+
+	function handleSaveScenario() {
+		const name = scenarioName.trim();
+		if (!name) return;
+		saveScenario(name);
+		scenarioName = '';
+		showSaveDialog = false;
 	}
 
 	function handleEndSession() {
@@ -123,11 +194,25 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-		if (e.key === 'Escape' && (state === 'driving' || state === 'ready')) {
-			handleEndSession();
+		if (e.key === 'Escape') {
+			if (showObjectPlacer) {
+				showObjectPlacer = false;
+			} else if (state === 'driving' || state === 'ready') {
+				handleEndSession();
+			}
 		}
-		if (e.key === 'r' && state === 'driving') {
+		if (state !== 'driving') return;
+		if (e.key === 'r') {
 			respawnVehicle();
+		}
+		if (e.key === 'p' || e.key === 'P') {
+			showObjectPlacer = !showObjectPlacer;
+			if (showObjectPlacer && objects.length === 0) {
+				requestObjects();
+			}
+		}
+		if ((e.key === 'u' || e.key === 'U') && !showObjectPlacer) {
+			undoPlace();
 		}
 	}
 </script>
@@ -136,7 +221,7 @@
 	<title>V2X Drive</title>
 </svelte:head>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onbeforeunload={cleanupSession} />
 
 {#if showCalibration}
 	<CalibrationWizard onComplete={handleCalibrationComplete} />
@@ -156,7 +241,7 @@
 					<p class="text-sm text-gray-400 mb-4">Drive through the CARLA world</p>
 
 					<!-- Input mode toggle -->
-					<div class="flex justify-center mb-4">
+					<div class="flex justify-center mb-3">
 						<div class="flex bg-gray-800 rounded-lg p-0.5">
 							<button onclick={() => setInputMode('keyboard')}
 								class="px-3 py-1 rounded-md text-sm transition-colors {inputMode === 'keyboard' ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
@@ -168,6 +253,55 @@
 							</button>
 						</div>
 					</div>
+
+					<!-- Tunnel selector -->
+					<div class="flex justify-center mb-3">
+						<div class="flex bg-gray-800 rounded-lg p-0.5">
+							{#each DRIVE_TUNNELS as tunnel}
+								<button onclick={() => switchTunnel(tunnel.id)}
+									class="px-3 py-1 rounded-md text-sm transition-colors {selectedTunnel === tunnel.id ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}">
+									{tunnel.label}
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<!-- Vehicle picker -->
+					<div class="mb-4">
+						{#if vehicles.length > 0}
+							<select
+								bind:value={selectedVehicle}
+								class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 appearance-none cursor-pointer"
+							>
+								{#each vehicles as v}
+									<option value={v.id}>
+										{v.name}{v.wheels === 2 ? ' (bike)' : ''}
+									</option>
+								{/each}
+							</select>
+						{:else}
+							<div class="px-3 py-2 bg-gray-800 rounded-lg text-sm text-gray-500 text-center">
+								Loading vehicles...
+							</div>
+						{/if}
+					</div>
+
+					<!-- Scenario preset -->
+					{#if scenarios.length > 0}
+						<div class="mb-3">
+							<select
+								bind:value={selectedScenario}
+								class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 appearance-none cursor-pointer"
+							>
+								<option value="">No scenario (empty world)</option>
+								{#each scenarios as s}
+									<option value={s.file}>
+										{s.name} ({s.object_count} objects)
+									</option>
+								{/each}
+							</select>
+						</div>
+					{/if}
 
 					<button onclick={handleQuickStart}
 						class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
@@ -182,6 +316,8 @@
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">Space</kbd> Brake</span>
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">R</kbd> Respawn</span>
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">1-4</kbd> Camera</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">P</kbd> Place Object</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">U</kbd> Undo Place</span>
 						</div>
 					{:else if gamepad}
 						<p class="text-xs text-green-400">Wheel connected — ready</p>
@@ -225,13 +361,88 @@
 			</button>
 		</div>
 
-		<!-- Input mode + connection — top left, subtle -->
+		<!-- Input mode + tunnel + connection — top left, subtle -->
 		<div class="absolute top-2 left-2 z-20 flex items-center gap-2 pointer-events-auto">
 			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
 				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 			</span>
+			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
+				{DRIVE_TUNNELS.find(t => t.id === selectedTunnel)?.label}
+			</span>
 			<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
+			{#if numPlaced > 0}
+				<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-yellow-300">
+					{numPlaced} placed
+				</span>
+			{/if}
 		</div>
+
+		<!-- Object Placer Panel — slide-in from bottom-left -->
+		{#if showObjectPlacer}
+			<div class="absolute bottom-16 left-2 z-30 w-72 max-h-80 bg-gray-900/95 border border-gray-700 rounded-xl overflow-hidden pointer-events-auto flex flex-col">
+				<div class="p-2 border-b border-gray-700 flex items-center gap-2">
+					<input
+						type="text"
+						bind:value={objectFilter}
+						placeholder="Search objects..."
+						class="flex-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+					/>
+					<button onclick={() => undoPlace()}
+						class="px-2 py-1 bg-yellow-600/70 hover:bg-yellow-600 rounded text-xs text-white"
+						title="Undo last (U)">
+						Undo
+					</button>
+					<button onclick={() => { showObjectPlacer = false; }}
+						class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300">
+						X
+					</button>
+				</div>
+				<div class="overflow-y-auto flex-1">
+					{#each filteredObjects as obj}
+						<button
+							onclick={() => { spawnObject(obj.id); }}
+							class="w-full px-3 py-1.5 text-left text-xs hover:bg-gray-800 transition-colors flex items-center gap-2"
+						>
+							<span class="w-1.5 h-1.5 rounded-full {obj.category === 'vehicle' ? 'bg-blue-400' : 'bg-orange-400'}"></span>
+							<span class="text-white truncate">{obj.name}</span>
+							<span class="text-gray-500 text-[10px] ml-auto">{obj.category}</span>
+						</button>
+					{/each}
+					{#if filteredObjects.length === 0}
+						<p class="p-3 text-xs text-gray-500 text-center">
+							{objects.length === 0 ? 'Loading...' : 'No matches'}
+						</p>
+					{/if}
+				</div>
+				<div class="p-1.5 border-t border-gray-700">
+					{#if showSaveDialog}
+						<div class="flex gap-1">
+							<input
+								type="text"
+								bind:value={scenarioName}
+								placeholder="Scenario name..."
+								class="flex-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs text-white placeholder-gray-500 focus:outline-none"
+								onkeydown={(e) => { if (e.key === 'Enter') handleSaveScenario(); if (e.key === 'Escape') showSaveDialog = false; }}
+							/>
+							<button onclick={handleSaveScenario}
+								class="px-2 py-1 bg-green-600/70 hover:bg-green-600 rounded text-xs text-white">
+								Save
+							</button>
+						</div>
+					{:else}
+						<div class="flex items-center justify-between">
+							<span class="text-[10px] text-gray-500">P toggle | Click to place | U undo</span>
+							{#if numPlaced > 0}
+								<button onclick={() => { showSaveDialog = true; }}
+									class="px-2 py-0.5 bg-green-600/50 hover:bg-green-600 rounded text-[10px] text-white">
+									Save Scene
+								</button>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
 
 	{:else if state === 'error'}
 		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
