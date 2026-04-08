@@ -126,11 +126,11 @@ function handleServerMessage(msg: DriveMessage): void {
 			// Handle V2X proximity alerts from telemetry
 			if (msg.v2x_alerts) {
 				v2xAlerts.update(existing => {
-					const newAlerts = msg.v2x_alerts as V2xAlert[];
-					// Only add alerts not already shown
-					const existingIds = new Set(existing.map(a => a.id));
-					const fresh = newAlerts.filter(a => !existingIds.has(a.id));
-					return [...existing, ...fresh];
+					const newAlerts = (msg.v2x_alerts as V2xAlert[]).map(a => ({
+						...a,
+						_uid: Date.now() + Math.random(),
+					}));
+					return [...existing, ...newAlerts];
 				});
 			}
 			break;
