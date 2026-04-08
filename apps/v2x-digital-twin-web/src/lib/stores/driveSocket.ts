@@ -6,7 +6,7 @@
  */
 
 import { writable, get } from 'svelte/store';
-import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo } from '$lib/types';
+import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert } from '$lib/types';
 
 // ── Stores ──
 
@@ -36,6 +36,9 @@ export const spawnableObjects = writable<SpawnableObject[]>([]);
 export const placedObjects = writable<PlacedObject[]>([]);
 export const placedCount = writable<number>(0);
 export const scenarioList = writable<ScenarioInfo[]>([]);
+export const v2xSignals = writable<V2xSignal[]>([]);
+export const v2xSignalCount = writable<number>(0);
+export const v2xAlerts = writable<V2xAlert[]>([]);
 
 // ── WebSocket ──
 
@@ -120,6 +123,16 @@ function handleServerMessage(msg: DriveMessage): void {
 			if (get(sessionState) === 'ready') {
 				sessionState.set('driving');
 			}
+			// Handle V2X proximity alerts from telemetry
+			if (msg.v2x_alerts) {
+				v2xAlerts.update(existing => {
+					const newAlerts = msg.v2x_alerts as V2xAlert[];
+					// Only add alerts not already shown
+					const existingIds = new Set(existing.map(a => a.id));
+					const fresh = newAlerts.filter(a => !existingIds.has(a.id));
+					return [...existing, ...fresh];
+				});
+			}
 			break;
 
 		case 'session_ended':
@@ -172,6 +185,23 @@ function handleServerMessage(msg: DriveMessage): void {
 
 		case 'camera_switched':
 			// Acknowledged — no state change needed
+			break;
+
+		case 'v2x_signal_placed':
+			v2xSignals.update(list => [...list, msg.signal as V2xSignal]);
+			v2xSignalCount.set(msg.signal_count as number);
+			break;
+
+		case 'v2x_signal_removed':
+			v2xSignals.update(list => list.filter(s => s.id !== (msg.signal_id as number)));
+			v2xSignalCount.set(msg.signal_count as number);
+			break;
+
+		case 'v2x_undo_empty':
+			break;
+
+		case 'v2x_signal_list':
+			v2xSignals.set((msg.signals as V2xSignal[]) ?? []);
 			break;
 
 		case 'error':
@@ -249,4 +279,26 @@ export function deleteScenario(file: string): void {
 export function endSession(): void {
 	sessionState.set('ending');
 	send({ type: 'end_session' });
+}
+
+// ── V2X Signal Actions ──
+
+export function placeV2xSignal(message: string, signalType: string = 'warning', radius: number = 30.0): void {
+	send({ type: 'place_v2x_signal', message, signal_type: signalType, radius });
+}
+
+export function removeV2xSignal(signalId: number): void {
+	send({ type: 'remove_v2x_signal', signal_id: signalId });
+}
+
+export function undoV2xSignal(): void {
+	send({ type: 'undo_v2x_signal' });
+}
+
+export function requestV2xSignals(): void {
+	send({ type: 'list_v2x_signals' });
+}
+
+export function dismissV2xAlert(alertId: number): void {
+	v2xAlerts.update(list => list.filter(a => a.id !== alertId));
 }

@@ -118,6 +118,21 @@ export interface ScenarioInfo {
 	object_count: number;
 }
 
+export interface V2xSignal {
+	id: number;
+	pos: [number, number, number];
+	message: string;
+	signal_type: 'warning' | 'info' | 'alert';
+	radius: number;
+}
+
+export interface V2xAlert {
+	id: number;
+	message: string;
+	signal_type: 'warning' | 'info' | 'alert';
+	distance: number;
+}
+
 export interface DriveMessage {
 	type: string;
 	[key: string]: unknown;

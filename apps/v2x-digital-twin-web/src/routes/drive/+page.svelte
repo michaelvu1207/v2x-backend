@@ -27,6 +27,7 @@
 		spawnableObjects,
 		placedCount,
 		scenarioList,
+		v2xSignalCount,
 		connect,
 		disconnect,
 		startSession,
@@ -41,12 +42,15 @@
 		loadScenario,
 		spawnObject,
 		undoPlace,
+		undoV2xSignal,
 		setOnFrame,
 	} from '$lib/stores/driveSocket';
 
 	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
 	import HudOverlay from '$lib/components/HudOverlay.svelte';
+	import V2xToast from '$lib/components/V2xToast.svelte';
+	import V2xSignalPlacer from '$lib/components/V2xSignalPlacer.svelte';
 
 	type InputMode = 'wheel' | 'keyboard';
 
@@ -58,6 +62,7 @@
 	let selectedTunnel = $state<TunnelId>(DRIVE_TUNNELS[0].id);
 	let selectedVehicle = $state('vehicle.tesla.model3');
 	let showObjectPlacer = $state(false);
+	let showV2xPlacer = $state(false);
 	let objectFilter = $state('');
 	let selectedScenario = $state('');
 	let showSaveDialog = $state(false);
@@ -67,6 +72,7 @@
 	let objects = $derived($spawnableObjects);
 	let scenarios = $derived($scenarioList);
 	let numPlaced = $derived($placedCount);
+	let numV2xSignals = $derived($v2xSignalCount);
 	let filteredObjects = $derived(
 		objects.filter(o =>
 			objectFilter === '' ||
@@ -197,6 +203,8 @@
 		if (e.key === 'Escape') {
 			if (showObjectPlacer) {
 				showObjectPlacer = false;
+			} else if (showV2xPlacer) {
+				showV2xPlacer = false;
 			} else if (state === 'driving' || state === 'ready') {
 				handleEndSession();
 			}
@@ -207,11 +215,16 @@
 		}
 		if (e.key === 'p' || e.key === 'P') {
 			showObjectPlacer = !showObjectPlacer;
+			showV2xPlacer = false;
 			if (showObjectPlacer && objects.length === 0) {
 				requestObjects();
 			}
 		}
-		if ((e.key === 'u' || e.key === 'U') && !showObjectPlacer) {
+		if (e.key === 'v' || e.key === 'V') {
+			showV2xPlacer = !showV2xPlacer;
+			showObjectPlacer = false;
+		}
+		if ((e.key === 'u' || e.key === 'U') && !showObjectPlacer && !showV2xPlacer) {
 			undoPlace();
 		}
 	}
@@ -317,6 +330,7 @@
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">R</kbd> Respawn</span>
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">1-4</kbd> Camera</span>
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">P</kbd> Place Object</span>
+							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">V</kbd> V2X Signal</span>
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">U</kbd> Undo Place</span>
 						</div>
 					{:else if gamepad}
@@ -340,6 +354,9 @@
 		<!-- Full-screen camera — no header, everything overlays -->
 		<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
 		<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+
+		<!-- V2X toast notifications -->
+		<V2xToast />
 
 		<!-- All buttons overlay on the video -->
 		<div class="absolute top-2 right-2 z-20 flex gap-1.5 pointer-events-auto">
@@ -375,7 +392,17 @@
 					{numPlaced} placed
 				</span>
 			{/if}
+			{#if numV2xSignals > 0}
+				<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-cyan-300">
+					{numV2xSignals} signals
+				</span>
+			{/if}
 		</div>
+
+		<!-- V2X Signal Placer Panel -->
+		{#if showV2xPlacer}
+			<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />
+		{/if}
 
 		<!-- Object Placer Panel — slide-in from bottom-left -->
 		{#if showObjectPlacer}
