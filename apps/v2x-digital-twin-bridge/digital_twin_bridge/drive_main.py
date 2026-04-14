@@ -57,17 +57,44 @@ async def main():
         logger.info("Cleaning up leftover sensor: %s (id=%d)", actor.type_id, actor.id)
         actor.destroy()
 
-    # Switch to async mode for real-time driving
+    # Switch to synchronous mode at 20 Hz — matches CARLA's manual_control.py.
+    # Sync mode gives the vehicle a natural top speed because physics ticks
+    # are paced (one 0.05 s step per world.tick()) instead of running as fast
+    # as the simulator can manage. The bridge becomes the tick master; a
+    # dedicated coroutine below drives the loop.
     settings = world.get_settings()
     original_sync = settings.synchronous_mode
-    settings.synchronous_mode = False
+    original_fixed_dt = settings.fixed_delta_seconds
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 0.05
     world.apply_settings(settings)
-    logger.info("CARLA switched to async mode for driving")
+    logger.info("CARLA switched to sync mode (fixed_delta_seconds=0.05) for driving")
 
     api_fetcher = make_api_fetcher(config)
 
     async def handler(websocket):
         await serve_drive(websocket, world, carla_map, api_fetcher)
+
+    async def tick_loop():
+        """Advance CARLA physics at 20 Hz.
+
+        In sync mode the world does not tick on its own — the bridge must
+        call world.tick() to step physics. We wrap the blocking tick() in
+        run_in_executor so it doesn't stall the asyncio event loop, and
+        pace the loop to real time so sim time ≈ wall time.
+        """
+        loop = asyncio.get_running_loop()
+        target_dt = 0.05  # must match fixed_delta_seconds above
+        while True:
+            start = loop.time()
+            try:
+                await loop.run_in_executor(None, world.tick)
+            except Exception as e:
+                logger.warning("world.tick() failed: %s", e)
+                await asyncio.sleep(target_dt)
+                continue
+            elapsed = loop.time() - start
+            await asyncio.sleep(max(0.0, target_dt - elapsed))
 
     async def periodic_actor_audit():
         """Every 60s, check for orphaned actors when no sessions are active."""
@@ -106,7 +133,8 @@ async def main():
     logger.info("Starting drive server on ws://0.0.0.0:%d", port)
 
     try:
-        # Start periodic orphan cleanup
+        # Start the sync-mode tick loop and periodic orphan cleanup
+        tick_task = asyncio.create_task(tick_loop())
         audit_task = asyncio.create_task(periodic_actor_audit())
 
         async with websockets.serve(
@@ -120,8 +148,15 @@ async def main():
             logger.info("Drive server ready. Waiting for connections...")
             await asyncio.Future()
     finally:
+        # Stop the tick loop before restoring async — otherwise the loop
+        # would race with the settings change and log spurious errors.
+        try:
+            tick_task.cancel()
+        except Exception:
+            pass
         settings = world.get_settings()
         settings.synchronous_mode = original_sync
+        settings.fixed_delta_seconds = original_fixed_dt
         world.apply_settings(settings)
         logger.info("CARLA settings restored")
 

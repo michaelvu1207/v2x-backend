@@ -20,7 +20,8 @@ export const rawButtons = writable<boolean[]>([]);
 // Calibration — loaded from localStorage or defaults
 function loadCalibration(): GamepadCalibration {
 	if (typeof localStorage === 'undefined') return DEFAULT_CALIBRATION;
-	const saved = localStorage.getItem('drive_calibration');
+	localStorage.removeItem('drive_calibration');
+	const saved = localStorage.getItem('drive_calibration_v2');
 	if (saved) {
 		try {
 			return JSON.parse(saved);
@@ -36,7 +37,7 @@ export const calibration = writable<GamepadCalibration>(loadCalibration());
 // Auto-save calibration changes to localStorage
 calibration.subscribe((cal) => {
 	if (typeof localStorage !== 'undefined') {
-		localStorage.setItem('drive_calibration', JSON.stringify(cal));
+		localStorage.setItem('drive_calibration_v2', JSON.stringify(cal));
 	}
 });
 
@@ -191,6 +192,35 @@ function onGamepadConnected(e: GamepadEvent) {
 		gasInverted: gasNeedsInvert,
 		brakeInverted: brakeNeedsInvert,
 	});
+}
+
+/**
+ * Re-snapshot pedal rest values and re-detect inversion for the *current*
+ * gasAxis / brakeAxis in the calibration store. Call this after the wizard
+ * reassigns pedal axes — otherwise gasRestValue/brakeRestValue still refer
+ * to the axes that were active at connect time, and normalizePedal will
+ * misbehave. The user must have their feet OFF the pedals when this runs.
+ */
+export function recalibrateRestValues(): void {
+	const idx = get(gamepadIndex);
+	if (idx < 0) return;
+	const gp = navigator.getGamepads()[idx];
+	if (!gp) return;
+
+	const cal = get(calibration);
+	gasRestValue = gp.axes[cal.gasAxis] ?? 0;
+	brakeRestValue = gp.axes[cal.brakeAxis] ?? 0;
+
+	const gasNeedsInvert = gasRestValue > 0.5;
+	const brakeNeedsInvert = brakeRestValue > 0.5;
+
+	calibration.update((c) => ({
+		...c,
+		gasInverted: gasNeedsInvert,
+		brakeInverted: brakeNeedsInvert,
+	}));
+
+	console.log(`[Gamepad] Recalibrated rest values: gas=${gasRestValue.toFixed(3)} (inverted=${gasNeedsInvert}), brake=${brakeRestValue.toFixed(3)} (inverted=${brakeNeedsInvert})`);
 }
 
 function onGamepadDisconnected(e: GamepadEvent) {

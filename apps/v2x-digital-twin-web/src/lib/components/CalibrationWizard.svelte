@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { rawAxes, calibration, gamepadConnected, gamepadName } from '$lib/stores/gamepad';
+	import { rawAxes, calibration, gamepadConnected, gamepadName, recalibrateRestValues } from '$lib/stores/gamepad';
 	import type { GamepadCalibration } from '$lib/types';
 
 	interface Props {
@@ -58,15 +58,16 @@
 		step++;
 
 		if (step >= steps.length) {
-			// Save calibration
-			calibration.set({
-				steerAxis: result.steerAxis ?? 0,
-				gasAxis: result.gasAxis ?? 1,
-				brakeAxis: result.brakeAxis ?? 2,
-				steerInverted: false,
-				gasInverted: false,
-				brakeInverted: true,
-			});
+			// Save axis assignments without stomping on inversion flags —
+			// recalibrateRestValues() will re-derive those from the live
+			// hardware state for the newly-assigned pedal axes.
+			calibration.update((c) => ({
+				...c,
+				steerAxis: result.steerAxis ?? c.steerAxis,
+				gasAxis: result.gasAxis ?? c.gasAxis,
+				brakeAxis: result.brakeAxis ?? c.brakeAxis,
+			}));
+			recalibrateRestValues();
 			onComplete();
 		}
 	}

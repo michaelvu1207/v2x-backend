@@ -265,6 +265,12 @@
 								Wheel {gamepad ? '' : '(N/A)'}
 							</button>
 						</div>
+						{#if inputMode === 'wheel' && gamepad}
+							<button onclick={() => showCalibration = true}
+								class="ml-2 px-2 py-1 rounded-md text-xs text-gray-400 hover:text-white bg-gray-800 transition-colors">
+								Calibrate
+							</button>
+						{/if}
 					</div>
 
 					<!-- Tunnel selector -->
@@ -383,6 +389,12 @@
 			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
 				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 			</span>
+			{#if inputMode === 'wheel' && gamepad}
+				<button onclick={() => showCalibration = true}
+					class="px-2 py-1 bg-black/50 hover:bg-black/70 rounded text-[10px] text-gray-400 hover:text-white transition-colors">
+					Calibrate
+				</button>
+			{/if}
 			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
 				{DRIVE_TUNNELS.find(t => t.id === selectedTunnel)?.label}
 			</span>

@@ -221,16 +221,7 @@ class DriveSession:
             if self.vehicle is None:
                 raise RuntimeError("Failed to spawn vehicle")
 
-            # Limit vehicle top speed to ~50% via physics override
-            try:
-                import carla
-                physics = self.vehicle.get_physics_control()
-                physics.max_rpm = physics.max_rpm * 0.5
-                physics.torque_curve = [(rpm, torque * 0.5) for rpm, torque in physics.torque_curve]
-                self.vehicle.apply_physics_control(physics)
-                logger.info("Vehicle physics capped at 50%% power")
-            except Exception as e:
-                logger.debug("Could not adjust physics: %s", e)
+            # Physics power cap removed — vehicle runs at stock max_rpm / torque curve.
 
             # Attach RGB camera sensor to the vehicle
             self._attach_camera(bp_lib)
@@ -316,9 +307,9 @@ class DriveSession:
         if not self._active or self.vehicle is None:
             raise RuntimeError("No active session")
 
-        # Cap throttle at 50% for safer driving
-        THROTTLE_CAP = 0.5
-        capped_throttle = max(0.0, min(THROTTLE_CAP, throttle * THROTTLE_CAP))
+        # Throttle pass-through — top speed is governed by CARLA vehicle physics,
+        # same as PythonAPI/examples/manual_control.py.
+        capped_throttle = max(0.0, min(1.0, throttle))
 
         try:
             import carla

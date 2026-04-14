@@ -13,6 +13,16 @@
 
 import { writable, get } from 'svelte/store';
 import type { NormalizedInput } from './gamepad';
+import { telemetry } from './driveSocket';
+
+// Speed-sensitive steering: at low speed the wheels can over-rotate the car
+// in CARLA's vehicle model (almost no lateral grip force to oppose them), so
+// we cap the maximum steering authority until the car has some forward
+// momentum. Below LOW_SPEED_FLOOR_KMH the cap is LOW_SPEED_STEER_CAP, ramping
+// linearly to full ±1.0 by FULL_STEER_SPEED_KMH.
+const LOW_SPEED_STEER_CAP = 0.4;
+const LOW_SPEED_FLOOR_KMH = 0;
+const FULL_STEER_SPEED_KMH = 25;
 
 export const keyboardActive = writable<boolean>(false);
 
@@ -21,7 +31,8 @@ const keys: Record<string, boolean> = {};
 let currentSteer = 0;
 const STEER_SPEED = 3.0;
 const STEER_RETURN_SPEED = 5.0;
-const THROTTLE_RAMP = 2.5;
+// CARLA manual_control.py adds 0.1/frame at ~60Hz → ~6.0/sec.
+const THROTTLE_RAMP = 6.0;
 
 let currentForwardThrottle = 0;
 let currentReverseThrottle = 0;
@@ -76,13 +87,22 @@ function update() {
 	}
 	currentSteer = Math.max(-1, Math.min(1, currentSteer));
 
-	// Forward throttle (W / ↑)
+	// Speed-sensitive steering cap — pulled from live telemetry.
+	const speedKmh = Math.abs(get(telemetry).speed ?? 0);
+	const t = Math.max(
+		0,
+		Math.min(1, (speedKmh - LOW_SPEED_FLOOR_KMH) / (FULL_STEER_SPEED_KMH - LOW_SPEED_FLOOR_KMH))
+	);
+	const steerCap = LOW_SPEED_STEER_CAP + (1 - LOW_SPEED_STEER_CAP) * t;
+	const cookedSteer = Math.max(-steerCap, Math.min(steerCap, currentSteer));
+
+	// Forward throttle (W / ↑) — CARLA-style: ramp up while held, instant 0 on release.
 	const wantForward = keys['w'] || keys['arrowup'];
 	if (wantForward) {
 		currentForwardThrottle = Math.min(1, currentForwardThrottle + THROTTLE_RAMP * dt);
 		currentReverseThrottle = 0; // can't go forward and reverse at the same time
 	} else {
-		currentForwardThrottle = Math.max(0, currentForwardThrottle - THROTTLE_RAMP * 2 * dt);
+		currentForwardThrottle = 0;
 	}
 
 	// Reverse throttle (S / ↓)
@@ -107,7 +127,7 @@ function update() {
 	const throttle = isReverse ? currentReverseThrottle : currentForwardThrottle;
 
 	keyboardInput.set({
-		steer: currentSteer,
+		steer: cookedSteer,
 		throttle,
 		brake: currentBrake,
 		reverse: isReverse
