@@ -1,15 +1,27 @@
 /**
- * Gamepad Store — polls the browser Gamepad API for steering wheel input.
+ * Gamepad Store — steering wheel + pedal input via the browser Gamepad API.
  *
- * Handles: connection detection, axis calibration, normalization,
- * deadzone filtering, and localStorage persistence of calibration.
+ * Pedal normalization strategy:
+ *   The G923's pedal axes swing between -1 and +1, but the rest position
+ *   can be either end and varies between sessions. Instead of guessing the
+ *   rest value from an unreliable initial snapshot, we:
+ *
+ *   1. Output zeros until we're confident about the mapping.
+ *   2. On each poll frame, track the min and max values seen per pedal axis.
+ *   3. Once we've seen a full-range sweep (max - min > 1.0), the pedal has
+ *      been pressed and released. At that point, the current value is at rest.
+ *   4. Fallback: if 120 frames (~2s) pass without a sweep, snapshot whatever
+ *      extreme the axis is at now (driver should have stabilized by then).
+ *
+ * Only axis assignments are persisted to localStorage. Inversion is always
+ * re-detected at runtime.
  */
 
 import { writable, derived, get } from 'svelte/store';
 import { GAMEPAD_DEADZONE, DEFAULT_CALIBRATION } from '$lib/constants';
 import type { GamepadCalibration } from '$lib/types';
 
-// ── Stores ──
+// ── Public Stores ──
 
 export const gamepadConnected = writable<boolean>(false);
 export const gamepadName = writable<string>('');
@@ -17,14 +29,31 @@ export const gamepadIndex = writable<number>(-1);
 export const rawAxes = writable<number[]>([]);
 export const rawButtons = writable<boolean[]>([]);
 
-// Calibration — loaded from localStorage or defaults
+// ── Calibration (persisted) ──
+
+const STORAGE_KEY = 'drive_calibration_v4';
+
+// Whether the user has completed calibration (wizard or previously saved).
+let _hasStoredCalibration = false;
+
 function loadCalibration(): GamepadCalibration {
 	if (typeof localStorage === 'undefined') return DEFAULT_CALIBRATION;
+	// Clean up legacy keys
 	localStorage.removeItem('drive_calibration');
-	const saved = localStorage.getItem('drive_calibration_v2');
+	localStorage.removeItem('drive_calibration_v2');
+	localStorage.removeItem('drive_calibration_v3');
+
+	const saved = localStorage.getItem(STORAGE_KEY);
 	if (saved) {
 		try {
-			return JSON.parse(saved);
+			const axes = JSON.parse(saved);
+			_hasStoredCalibration = true;
+			return {
+				...DEFAULT_CALIBRATION,
+				steerAxis: axes.steerAxis ?? DEFAULT_CALIBRATION.steerAxis,
+				gasAxis: axes.gasAxis ?? DEFAULT_CALIBRATION.gasAxis,
+				brakeAxis: axes.brakeAxis ?? DEFAULT_CALIBRATION.brakeAxis,
+			};
 		} catch {
 			return DEFAULT_CALIBRATION;
 		}
@@ -32,74 +61,118 @@ function loadCalibration(): GamepadCalibration {
 	return DEFAULT_CALIBRATION;
 }
 
+export const calibrated = writable<boolean>(_hasStoredCalibration);
+
 export const calibration = writable<GamepadCalibration>(loadCalibration());
 
-// Auto-save calibration changes to localStorage
 calibration.subscribe((cal) => {
 	if (typeof localStorage !== 'undefined') {
-		localStorage.setItem('drive_calibration_v2', JSON.stringify(cal));
+		localStorage.setItem(STORAGE_KEY, JSON.stringify({
+			steerAxis: cal.steerAxis,
+			gasAxis: cal.gasAxis,
+			brakeAxis: cal.brakeAxis,
+		}));
 	}
 });
 
-// ── Normalized Input (derived) ──
+// ── Pedal Detection State ──
+
+interface PedalTracker {
+	min: number;
+	max: number;
+	rest: number;
+	detected: boolean;
+}
+
+let gas: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: false };
+let brake: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: false };
+let framesPolled = 0;
+
+const SWEEP_THRESHOLD = 1.0;   // min-max range that confirms a full press+release
+const FALLBACK_FRAMES = 120;   // ~2s: if no sweep seen, snapshot current value
+
+function resetDetection(): void {
+	gas = { min: Infinity, max: -Infinity, rest: 0, detected: false };
+	brake = { min: Infinity, max: -Infinity, rest: 0, detected: false };
+	framesPolled = 0;
+}
+
+function isAtExtreme(value: number): boolean {
+	return Math.abs(value) > 0.85 || Math.abs(value) < 0.15;
+}
+
+function updateTracker(tracker: PedalTracker, raw: number, frames: number): void {
+	if (tracker.detected) return;
+
+	tracker.min = Math.min(tracker.min, raw);
+	tracker.max = Math.max(tracker.max, raw);
+	const hasSweep = tracker.max - tracker.min > SWEEP_THRESHOLD;
+
+	// Primary: full sweep seen AND pedal has returned to an extreme (rest).
+	// This avoids capturing a mid-transit value as rest.
+	if (hasSweep && isAtExtreme(raw)) {
+		tracker.rest = raw;
+		tracker.detected = true;
+		return;
+	}
+
+	// Fallback: after 2 seconds with no sweep, use current extreme value.
+	if (!hasSweep && frames >= FALLBACK_FRAMES && isAtExtreme(raw)) {
+		tracker.rest = raw;
+		tracker.detected = true;
+		return;
+	}
+}
+
+// ── Normalization ──
 
 export interface NormalizedInput {
-	steer: number; // -1 (left) to 1 (right)
+	steer: number;    // -1 (left) to 1 (right)
 	throttle: number; // 0 to 1
-	brake: number; // 0 to 1
+	brake: number;    // 0 to 1
 	reverse: boolean;
 }
 
-// Pedal rest values detected on connect — used for normalization
-let gasRestValue = 0;
-let brakeRestValue = 0;
-
 /**
- * Normalize a pedal axis value to 0 (released) → 1 (pressed).
- * Handles three pedal ranges based on the detected resting value:
- *   rest ≈ 0  → range is 0..1, use raw directly
- *   rest ≈ -1 → range is -1..1, use (raw + 1) / 2
- *   rest ≈ +1 → range is 1..-1, use (1 - raw) / 2
+ * Normalize a pedal axis to 0 (released) → 1 (pressed).
+ * Uses the detected rest value to determine direction.
  */
-function normalizePedal(raw: number, inverted: boolean, restValue: number): number {
-	let value: number;
-	if (Math.abs(restValue) < 0.3) {
-		// Pedal rests near 0 → 0..1 range, use raw directly
-		value = raw;
-	} else if (inverted) {
-		// Pedal rests near +1 → 1..-1 range
-		value = (1 - raw) / 2;
+function normalizePedal(raw: number, rest: number): number {
+	if (Math.abs(rest) < 0.3) {
+		// Rest near 0 → range is 0..1
+		return Math.max(0, Math.min(1, raw));
+	} else if (rest > 0.5) {
+		// Rest near +1 → pressed goes toward -1
+		return Math.max(0, Math.min(1, (1 - raw) / 2));
 	} else {
-		// Pedal rests near -1 → -1..1 range
-		value = (raw + 1) / 2;
+		// Rest near -1 → pressed goes toward +1
+		return Math.max(0, Math.min(1, (raw + 1) / 2));
 	}
-	return Math.max(0, Math.min(1, value));
 }
 
 export const normalizedInput = derived(
 	[rawAxes, calibration],
-	([$rawAxes, $calibration]): NormalizedInput => {
-		if ($rawAxes.length === 0) {
+	([$rawAxes, $cal]): NormalizedInput => {
+		if ($rawAxes.length === 0 || !gas.detected) {
 			return { steer: 0, throttle: 0, brake: 0, reverse: false };
 		}
 
-		const rawSteer = $rawAxes[$calibration.steerAxis] ?? 0;
-		const rawGas = $rawAxes[$calibration.gasAxis] ?? 0;
-		const rawBrake = $rawAxes[$calibration.brakeAxis] ?? 0;
-
-		// Steer: -1 to 1, apply deadzone
-		let steer = $calibration.steerInverted ? -rawSteer : rawSteer;
+		// Steering (always works — no rest ambiguity)
+		let steer = $cal.steerInverted
+			? -($rawAxes[$cal.steerAxis] ?? 0)
+			: ($rawAxes[$cal.steerAxis] ?? 0);
 		if (Math.abs(steer) < GAMEPAD_DEADZONE) steer = 0;
 		steer = Math.max(-1, Math.min(1, steer));
 
-		// Normalize pedals to 0 (released) → 1 (pressed)
-		let throttle = normalizePedal(rawGas, $calibration.gasInverted, gasRestValue);
-		let brake = normalizePedal(rawBrake, $calibration.brakeInverted, brakeRestValue);
-
+		// Pedals
+		let throttle = normalizePedal($rawAxes[$cal.gasAxis] ?? 0, gas.rest);
+		let brakeVal = brake.detected
+			? normalizePedal($rawAxes[$cal.brakeAxis] ?? 0, brake.rest)
+			: 0;
 		if (throttle < GAMEPAD_DEADZONE) throttle = 0;
-		if (brake < GAMEPAD_DEADZONE) brake = 0;
+		if (brakeVal < GAMEPAD_DEADZONE) brakeVal = 0;
 
-		return { steer, throttle, brake, reverse: false };
+		return { steer, throttle, brake: brakeVal, reverse: false };
 	}
 );
 
@@ -108,16 +181,9 @@ export const normalizedInput = derived(
 let animFrameId: number | null = null;
 
 function poll() {
-	const gamepads = navigator.getGamepads();
-	const idx = get(gamepadIndex);
-	if (idx < 0) {
-		animFrameId = requestAnimationFrame(poll);
-		return;
-	}
-
-	const gp = gamepads[idx];
+	const gp = navigator.getGamepads()[get(gamepadIndex)];
 	if (!gp) {
-		gamepadConnected.set(false);
+		if (get(gamepadIndex) >= 0) gamepadConnected.set(false);
 		animFrameId = requestAnimationFrame(poll);
 		return;
 	}
@@ -125,23 +191,40 @@ function poll() {
 	rawAxes.set([...gp.axes]);
 	rawButtons.set(gp.buttons.map((b) => b.pressed));
 
+	// Update pedal detection
+	if (!gas.detected || !brake.detected) {
+		framesPolled++;
+		const cal = get(calibration);
+		const gasWas = gas.detected;
+		const brakeWas = brake.detected;
+		updateTracker(gas, gp.axes[cal.gasAxis] ?? 0, framesPolled);
+		updateTracker(brake, gp.axes[cal.brakeAxis] ?? 0, framesPolled);
+
+		if (gas.detected && !gasWas) {
+			console.log(`[Gamepad] Gas rest detected: ${gas.rest.toFixed(3)} (after ${framesPolled} frames)`);
+		}
+		if (brake.detected && !brakeWas) {
+			console.log(`[Gamepad] Brake rest detected: ${brake.rest.toFixed(3)} (after ${framesPolled} frames)`);
+		}
+	}
+
 	animFrameId = requestAnimationFrame(poll);
 }
+
+// ── Lifecycle ──
 
 export function startPolling(): void {
 	if (animFrameId !== null) return;
 
-	// Listen for gamepad connections
-	window.addEventListener('gamepadconnected', onGamepadConnected);
-	window.addEventListener('gamepaddisconnected', onGamepadDisconnected);
+	window.addEventListener('gamepadconnected', onConnect);
+	window.addEventListener('gamepaddisconnected', onDisconnect);
 
-	// Check if already connected
-	const gamepads = navigator.getGamepads();
-	for (let i = 0; i < gamepads.length; i++) {
-		if (gamepads[i]) {
-			gamepadIndex.set(i);
+	for (const gp of navigator.getGamepads()) {
+		if (gp) {
+			gamepadIndex.set(gp.index);
 			gamepadConnected.set(true);
-			gamepadName.set(gamepads[i]!.id);
+			gamepadName.set(gp.id);
+			resetDetection();
 			break;
 		}
 	}
@@ -154,82 +237,37 @@ export function stopPolling(): void {
 		cancelAnimationFrame(animFrameId);
 		animFrameId = null;
 	}
-	window.removeEventListener('gamepadconnected', onGamepadConnected);
-	window.removeEventListener('gamepaddisconnected', onGamepadDisconnected);
-}
-
-function onGamepadConnected(e: GamepadEvent) {
-	gamepadIndex.set(e.gamepad.index);
-	gamepadConnected.set(true);
-	gamepadName.set(e.gamepad.id);
-
-	// Log all axis resting values for debugging
-	const axes = [...e.gamepad.axes];
-	console.log(`[Gamepad] Connected: ${e.gamepad.id} (${e.gamepad.axes.length} axes, ${e.gamepad.buttons.length} buttons)`);
-	console.log(`[Gamepad] Resting axis values:`, axes.map((v, i) => `${i}=${v.toFixed(3)}`).join(', '));
-
-	// Auto-detect pedal range from resting values
-	const cal = get(calibration);
-	gasRestValue = axes[cal.gasAxis] ?? 0;
-	brakeRestValue = axes[cal.brakeAxis] ?? 0;
-
-	// Detect inversion based on resting position:
-	//   rest ≈ +1.0 → pedal goes 1 to -1 → needs inversion
-	//   rest ≈ -1.0 → pedal goes -1 to 1 → no inversion
-	//   rest ≈  0.0 → pedal goes 0 to 1  → no inversion (raw works directly)
-	const gasNeedsInvert = gasRestValue > 0.5;
-	const brakeNeedsInvert = brakeRestValue > 0.5;
-
-	// For pedals that rest at 0 (0..1 range), neither formula is right.
-	// We need to detect this and just use raw value.
-	const gasIs01Range = Math.abs(gasRestValue) < 0.3;
-	const brakeIs01Range = Math.abs(brakeRestValue) < 0.3;
-
-	console.log(`[Gamepad] Pedal analysis: gas rest=${gasRestValue.toFixed(3)} (${gasIs01Range ? '0-1 range' : gasNeedsInvert ? '1→-1 range' : '-1→1 range'}), brake rest=${brakeRestValue.toFixed(3)} (${brakeIs01Range ? '0-1 range' : brakeNeedsInvert ? '1→-1 range' : '-1→1 range'})`);
-
-	calibration.set({
-		...cal,
-		gasInverted: gasNeedsInvert,
-		brakeInverted: brakeNeedsInvert,
-	});
+	window.removeEventListener('gamepadconnected', onConnect);
+	window.removeEventListener('gamepaddisconnected', onDisconnect);
 }
 
 /**
- * Re-snapshot pedal rest values and re-detect inversion for the *current*
- * gasAxis / brakeAxis in the calibration store. Call this after the wizard
- * reassigns pedal axes — otherwise gasRestValue/brakeRestValue still refer
- * to the axes that were active at connect time, and normalizePedal will
- * misbehave. The user must have their feet OFF the pedals when this runs.
+ * Re-detect pedal rest values. Called after the calibration wizard
+ * reassigns axes. User should have feet off pedals.
  */
 export function recalibrateRestValues(): void {
-	const idx = get(gamepadIndex);
-	if (idx < 0) return;
-	const gp = navigator.getGamepads()[idx];
-	if (!gp) return;
-
-	const cal = get(calibration);
-	gasRestValue = gp.axes[cal.gasAxis] ?? 0;
-	brakeRestValue = gp.axes[cal.brakeAxis] ?? 0;
-
-	const gasNeedsInvert = gasRestValue > 0.5;
-	const brakeNeedsInvert = brakeRestValue > 0.5;
-
-	calibration.update((c) => ({
-		...c,
-		gasInverted: gasNeedsInvert,
-		brakeInverted: brakeNeedsInvert,
-	}));
-
-	console.log(`[Gamepad] Recalibrated rest values: gas=${gasRestValue.toFixed(3)} (inverted=${gasNeedsInvert}), brake=${brakeRestValue.toFixed(3)} (inverted=${brakeNeedsInvert})`);
+	calibrated.set(true);
+	resetDetection();
 }
 
-function onGamepadDisconnected(e: GamepadEvent) {
+// ── Event Handlers ──
+
+function onConnect(e: GamepadEvent) {
+	gamepadIndex.set(e.gamepad.index);
+	gamepadConnected.set(true);
+	gamepadName.set(e.gamepad.id);
+	console.log(`[Gamepad] Connected: ${e.gamepad.id} (${e.gamepad.axes.length} axes, ${e.gamepad.buttons.length} buttons)`);
+	resetDetection();
+}
+
+function onDisconnect(e: GamepadEvent) {
 	if (e.gamepad.index === get(gamepadIndex)) {
 		gamepadIndex.set(-1);
 		gamepadConnected.set(false);
 		gamepadName.set('');
 		rawAxes.set([]);
 		rawButtons.set([]);
+		resetDetection();
 		console.log(`[Gamepad] Disconnected: ${e.gamepad.id}`);
 	}
 }

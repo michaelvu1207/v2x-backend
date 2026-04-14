@@ -5,6 +5,7 @@
 
 	import {
 		gamepadConnected,
+		calibrated,
 		normalizedInput,
 		startPolling,
 		stopPolling,
@@ -98,6 +99,8 @@
 	let state = $derived($sessionState);
 	let currentTelemetry = $derived($telemetry);
 	let gamepad = $derived($gamepadConnected);
+	let isCalibrated = $derived($calibrated);
+	let wheelReady = $derived(inputMode === 'keyboard' || isCalibrated);
 	let error = $derived($lastError);
 
 	$effect(() => {
@@ -322,10 +325,18 @@
 						</div>
 					{/if}
 
-					<button onclick={handleQuickStart}
-						class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
-						Start Driving
-					</button>
+					{#if inputMode === 'wheel' && !isCalibrated}
+						<button onclick={() => showCalibration = true}
+							class="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
+							Calibrate Wheel
+						</button>
+						<p class="text-xs text-yellow-400">Calibration required before driving with wheel</p>
+					{:else}
+						<button onclick={handleQuickStart}
+							class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-xl text-lg font-semibold text-white transition-colors mb-4">
+							Start Driving
+						</button>
+					{/if}
 
 					{#if inputMode === 'keyboard'}
 						<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500 text-left">
@@ -339,8 +350,10 @@
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">V</kbd> V2X Signal</span>
 							<span><kbd class="px-1 py-0.5 bg-gray-800 rounded text-gray-400 font-mono">U</kbd> Undo Place</span>
 						</div>
+					{:else if gamepad && isCalibrated}
+						<p class="text-xs text-green-400">Wheel calibrated — ready</p>
 					{:else if gamepad}
-						<p class="text-xs text-green-400">Wheel connected — ready</p>
+						<p class="text-xs text-yellow-400">Calibrate wheel to continue</p>
 					{:else}
 						<p class="text-xs text-yellow-400">Connect wheel or switch to Keyboard</p>
 					{/if}
