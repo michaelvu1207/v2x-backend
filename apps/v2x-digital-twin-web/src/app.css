@@ -19,6 +19,10 @@
 }
 
 @theme {
+	--font-display: 'Syncopate', sans-serif;
+	--font-mono: 'Space Mono', monospace;
+	--font-body: 'Space Mono', monospace;
+
 	--color-cone: #ff8c00;
 	--color-vehicle: #0078ff;
 	--color-walker: #00c850;
@@ -30,6 +34,8 @@
 	--color-surface: #111827;
 	--color-surface-elevated: #1f2937;
 	--color-border: #374151;
+	--color-accent: #DC2626;
+	--color-accent-glow: rgba(220, 38, 38, 0.4);
 }
 
 html,
