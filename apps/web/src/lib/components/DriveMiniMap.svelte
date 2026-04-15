@@ -111,8 +111,8 @@
 		const [lon, lat] = carlaToGps(t.pos[0], t.pos[1], originLat, originLon);
 		carMarker.setLngLat([lon, lat]);
 		// CARLA yaw: 0=forward(+X), 90=right(+Y). MapLibre bearing: 0=north, 90=east.
-		// Negate because CARLA Y-axis is inverted relative to GPS north.
-		carMarker.setRotation(-t.rot[1]);
+		// Negate for Y-axis inversion, offset 30 degrees CCW for map alignment.
+		carMarker.setRotation(-t.rot[1] - 30);
 		map.setCenter([lon, lat]);
 	});
 
