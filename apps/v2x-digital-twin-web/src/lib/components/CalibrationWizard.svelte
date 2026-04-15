@@ -15,9 +15,9 @@
 	let result = $state<Partial<GamepadCalibration>>({});
 
 	const steps = [
-		{ label: 'Steering', instruction: 'Turn your wheel fully left and right', key: 'steerAxis' as const },
-		{ label: 'Gas Pedal', instruction: 'Press your gas pedal fully, then release', key: 'gasAxis' as const },
-		{ label: 'Brake Pedal', instruction: 'Press your brake pedal fully, then release', key: 'brakeAxis' as const },
+		{ label: 'Steering', instruction: 'Turn your wheel fully left and right', key: 'steerAxis' as const, icon: 'steer' },
+		{ label: 'Gas Pedal', instruction: 'Press your gas pedal fully, then release', key: 'gasAxis' as const, icon: 'gas' },
+		{ label: 'Brake Pedal', instruction: 'Press your brake pedal fully, then release', key: 'brakeAxis' as const, icon: 'brake' },
 	];
 
 	function startDetection() {
@@ -58,9 +58,6 @@
 		step++;
 
 		if (step >= steps.length) {
-			// Save axis assignments without stomping on inversion flags —
-			// recalibrateRestValues() will re-derive those from the live
-			// hardware state for the newly-assigned pedal axes.
 			calibration.update((c) => ({
 				...c,
 				steerAxis: result.steerAxis ?? c.steerAxis,
@@ -77,54 +74,112 @@
 	}
 </script>
 
-<div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-	<div class="bg-gray-900 rounded-2xl p-8 max-w-md w-full mx-4 border border-gray-700">
-		<h2 class="text-xl font-bold text-white mb-1">Wheel Calibration</h2>
-		<p class="text-sm text-gray-400 mb-6">Step {step + 1} of {steps.length}</p>
+<div class="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50">
+	<!-- Subtle background glow -->
+	<div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+		<div class="w-[500px] h-[500px] rounded-full bg-accent/5 blur-[100px]"></div>
+	</div>
+
+	<div class="relative bg-gray-900/80 backdrop-blur-xl rounded-2xl p-8 max-w-lg w-full mx-4 border border-gray-800/60 shadow-2xl shadow-black/50">
+		<!-- Header -->
+		<div class="mb-6">
+			<h2 class="font-display text-xl font-bold text-white tracking-widest uppercase">Calibration</h2>
+			<div class="mt-1.5 w-10 h-0.5 bg-accent rounded-full"></div>
+		</div>
+
+		<!-- Step progress -->
+		<div class="flex items-center gap-2 mb-8">
+			{#each steps as s, i}
+				<div class="flex items-center gap-2 {i < steps.length - 1 ? 'flex-1' : ''}">
+					<div class="relative flex items-center justify-center w-8 h-8 rounded-full border-2 transition-all duration-300
+						{i < step
+							? 'bg-accent border-accent'
+							: i === step
+								? 'border-accent bg-accent/10'
+								: 'border-gray-700 bg-gray-800/50'}">
+						{#if i < step}
+							<svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+							</svg>
+						{:else}
+							<span class="text-xs font-body {i === step ? 'text-accent' : 'text-gray-600'}">{i + 1}</span>
+						{/if}
+					</div>
+					{#if i < steps.length - 1}
+						<div class="flex-1 h-px transition-all duration-300 {i < step ? 'bg-accent' : 'bg-gray-800'}"></div>
+					{/if}
+				</div>
+			{/each}
+		</div>
 
 		{#if !$gamepadConnected}
-			<div class="text-center py-8">
-				<p class="text-gray-400 mb-2">No wheel detected</p>
-				<p class="text-xs text-gray-500">Connect your Logitech wheel and press a button</p>
+			<!-- No wheel detected -->
+			<div class="text-center py-10">
+				<div class="w-16 h-16 mx-auto mb-4 rounded-full border-2 border-gray-700 flex items-center justify-center">
+					<svg class="w-8 h-8 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+						<circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" /><path d="M12 3v6M12 15v6M3 12h6M15 12h6" />
+					</svg>
+				</div>
+				<p class="font-body text-sm text-gray-400 tracking-wider">NO WHEEL DETECTED</p>
+				<p class="mt-1 font-body text-xs text-gray-600 tracking-wide">Connect your wheel and press a button</p>
 			</div>
 		{:else}
+			<!-- Current step info -->
 			<div class="mb-6">
-				<p class="text-sm text-gray-300 mb-1">{steps[step].label}</p>
-				<p class="text-lg text-white font-medium">{steps[step].instruction}</p>
+				<p class="text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1">{steps[step].label}</p>
+				<p class="text-lg font-body text-white">{steps[step].instruction}</p>
 			</div>
 
 			{#if !detecting}
 				<button onclick={startDetection}
-					class="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors">
+					class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
 					Start Detection
 				</button>
 			{:else}
 				<div class="mb-4">
-					<!-- Live axis display -->
-					<div class="grid grid-cols-4 gap-1 mb-4">
+					<!-- Axis grid — visual bars instead of raw numbers -->
+					<div class="grid grid-cols-4 gap-1.5 mb-5">
 						{#each $rawAxes as axis, i}
-							<div class="flex flex-col items-center p-2 rounded-lg {detectedAxis === i ? 'bg-blue-600/30 border border-blue-500' : 'bg-gray-800'}">
-								<span class="text-[10px] text-gray-500">Axis {i}</span>
-								<span class="text-sm font-mono {detectedAxis === i ? 'text-blue-400' : 'text-gray-400'}">{axis.toFixed(2)}</span>
+							<div class="relative flex flex-col items-center p-2.5 rounded-xl transition-all duration-200
+								{detectedAxis === i
+									? 'bg-accent/10 border border-accent/50 shadow-[0_0_10px_rgba(220,38,38,0.15)]'
+									: 'bg-gray-800/50 border border-gray-800'}">
+								<span class="text-[9px] font-body text-gray-600 tracking-wider mb-1.5">AX{i}</span>
+								<!-- Mini bar visualization -->
+								<div class="w-full h-8 bg-gray-900 rounded-md relative overflow-hidden">
+									<div class="absolute bottom-0 left-0 right-0 transition-all duration-75 rounded-md
+										{detectedAxis === i ? 'bg-accent/70' : 'bg-gray-600/50'}"
+										style="height: {Math.abs(axis) * 100}%"></div>
+								</div>
+								<span class="mt-1 text-[10px] font-mono {detectedAxis === i ? 'text-accent' : 'text-gray-500'}">
+									{axis.toFixed(2)}
+								</span>
 							</div>
 						{/each}
 					</div>
 
 					{#if detectedAxis >= 0}
-						<p class="text-sm text-green-400 mb-3">Detected: Axis {detectedAxis}</p>
+						<div class="flex items-center gap-2 mb-3">
+							<div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.5)]"></div>
+							<span class="text-sm font-body text-green-400/80 tracking-wider">DETECTED: AXIS {detectedAxis}</span>
+						</div>
 						<button onclick={confirmAxis}
-							class="w-full py-3 bg-green-600 hover:bg-green-500 rounded-lg text-white font-medium transition-colors">
+							class="w-full py-3.5 bg-green-600 hover:bg-green-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_15px_rgba(34,197,94,0.2)] hover:shadow-[0_0_25px_rgba(34,197,94,0.4)] cursor-pointer">
 							Confirm Axis {detectedAxis}
 						</button>
 					{:else}
-						<p class="text-sm text-yellow-400 animate-pulse">Move the control...</p>
+						<div class="flex items-center justify-center gap-2 py-3">
+							<div class="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+							<span class="text-sm font-body text-yellow-500/80 tracking-wider animate-pulse">MOVE THE CONTROL...</span>
+						</div>
 					{/if}
 				</div>
 			{/if}
 		{/if}
 
+		<!-- Skip button -->
 		<button onclick={skipCalibration}
-			class="mt-4 w-full py-2 text-sm text-gray-500 hover:text-gray-300 transition-colors">
+			class="mt-5 w-full py-2.5 text-xs font-body text-gray-600 hover:text-gray-400 tracking-widest uppercase transition-colors cursor-pointer">
 			Skip (use defaults)
 		</button>
 	</div>
