@@ -78,18 +78,16 @@
 				},
 			});
 
-			// Car marker
+			// Car marker — directional arrow that rotates with heading
 			const el = document.createElement('div');
 			el.className = 'car-marker';
-			el.innerHTML = `<div style="
-				width: 12px; height: 12px;
-				background: #22d3ee;
-				border: 2px solid #ffffff;
-				border-radius: 50%;
-				box-shadow: 0 0 8px rgba(34, 211, 238, 0.6);
-			"></div>`;
+			el.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" style="filter: drop-shadow(0 0 4px rgba(34, 211, 238, 0.6));">
+				<polygon points="12,2 4,20 12,16 20,20" fill="#22d3ee" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
+			</svg>`;
+			el.style.width = '24px';
+			el.style.height = '24px';
 
-			carMarker = new maplibregl.Marker({ element: el })
+			carMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' })
 				.setLngLat([originLon || MAP_CENTER.lon, originLat || MAP_CENTER.lat])
 				.addTo(map);
 		});
@@ -107,6 +105,9 @@
 
 		const [lon, lat] = carlaToGps(t.pos[0], t.pos[1], originLat, originLon);
 		carMarker.setLngLat([lon, lat]);
+		// CARLA yaw: 0=forward(+X), 90=right(+Y). MapLibre bearing: 0=north, 90=east.
+		// Negate because CARLA Y-axis is inverted relative to GPS north.
+		carMarker.setRotation(-t.rot[1]);
 		map.setCenter([lon, lat]);
 	});
 
