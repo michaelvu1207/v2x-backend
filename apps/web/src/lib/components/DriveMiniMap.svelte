@@ -28,7 +28,12 @@
 			center: [originLon || MAP_CENTER.lon, originLat || MAP_CENTER.lat],
 			zoom: DEFAULT_ZOOM + 1,
 			attributionControl: false,
-			interactive: false,
+			dragPan: false,
+			dragRotate: false,
+			keyboard: false,
+			doubleClickZoom: false,
+			touchZoomRotate: false,
+			scrollZoom: true,
 		});
 
 		map.on('load', () => {
@@ -167,6 +172,19 @@
 	onclick={() => { expanded = !expanded; setTimeout(() => map?.resize(), 210); }}
 >
 	<div bind:this={mapContainer} class="h-full w-full"></div>
+
+	<!-- Zoom controls -->
+	<div class="absolute top-1 right-1 z-10 flex flex-col gap-0.5 pointer-events-auto"
+		onclick={(e) => e.stopPropagation()}>
+		<button
+			class="w-6 h-6 rounded bg-gray-800/90 border border-gray-700/60 text-gray-300 hover:text-white hover:bg-gray-700 text-xs font-bold flex items-center justify-center transition-colors"
+			onclick={(e) => { e.stopPropagation(); if (map) map.zoomIn(); }}
+		>+</button>
+		<button
+			class="w-6 h-6 rounded bg-gray-800/90 border border-gray-700/60 text-gray-300 hover:text-white hover:bg-gray-700 text-xs font-bold flex items-center justify-center transition-colors"
+			onclick={(e) => { e.stopPropagation(); if (map) map.zoomOut(); }}
+		>-</button>
+	</div>
 
 	<!-- Zone count badge -->
 	{#if $v2xZones.length > 0}
