@@ -153,7 +153,7 @@
 
 			const coords = feature.geometry.coordinates[0] as [number, number][];
 			const newZone: V2xZone = {
-				id: crypto.randomUUID(),
+				id: Math.random().toString(36).slice(2) + Date.now().toString(36),
 				name: `Zone ${zones.length + 1}`,
 				message: '',
 				signal_type: 'warning',
