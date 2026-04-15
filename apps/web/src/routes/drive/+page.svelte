@@ -1,0 +1,648 @@
+<script lang="ts">
+	import { onMount, onDestroy } from 'svelte';
+	import { DRIVE_TUNNELS, type TunnelId } from '$lib/constants';
+	import type { CameraView } from '$lib/types';
+
+	import {
+		gamepadConnected,
+		calibrated,
+		normalizedInput,
+		startPolling,
+		stopPolling,
+	} from '$lib/stores/gamepad';
+
+	import {
+		keyboardActive,
+		keyboardInput,
+		startKeyboardInput,
+		stopKeyboardInput,
+	} from '$lib/stores/keyboard';
+
+	import {
+		driveConnected,
+		sessionState,
+		telemetry,
+		lastError,
+		objectsCount,
+		vehicleList,
+		spawnableObjects,
+		placedCount,
+		scenarioList,
+		v2xSignalCount,
+		connect,
+		disconnect,
+		startSession,
+		sendControl,
+		switchCamera,
+		endSession,
+		respawnVehicle,
+		requestVehicles,
+		requestObjects,
+		requestScenarios,
+		saveScenario,
+		loadScenario,
+		spawnObject,
+		undoPlace,
+		undoV2xSignal,
+		setOnFrame,
+	} from '$lib/stores/driveSocket';
+
+	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
+	import CameraViewComponent from '$lib/components/CameraView.svelte';
+	import HudOverlay from '$lib/components/HudOverlay.svelte';
+	import V2xToast from '$lib/components/V2xToast.svelte';
+	import V2xSignalPlacer from '$lib/components/V2xSignalPlacer.svelte';
+	import V2xZoneEditor from '$lib/components/V2xZoneEditor.svelte';
+	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
+	import { v2xZones, checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
+	import { v2xAlerts } from '$lib/stores/driveSocket';
+	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
+
+	type InputMode = 'wheel' | 'keyboard';
+
+	let showCalibration = $state(false);
+	let activeCamera = $state<CameraView>('chase');
+	let controlLoopId = $state<number | null>(null);
+	let inputMode = $state<InputMode>('keyboard');
+	let cameraViewRef = $state<CameraViewComponent | null>(null);
+	let selectedTunnel = $state<TunnelId>(DRIVE_TUNNELS[0].id);
+	let selectedVehicle = $state('vehicle.tesla.model3');
+	let showObjectPlacer = $state(false);
+	let showV2xPlacer = $state(false);
+	let objectFilter = $state('');
+	let selectedScenario = $state('');
+	let showSaveDialog = $state(false);
+	let scenarioName = $state('');
+	let showZoneEditor = $state(false);
+	let mapData = $state<MapDataResponse | null>(null);
+	let numZones = $derived($v2xZones.length);
+
+	let vehicles = $derived($vehicleList);
+	let objects = $derived($spawnableObjects);
+	let scenarios = $derived($scenarioList);
+	let numPlaced = $derived($placedCount);
+	let numV2xSignals = $derived($v2xSignalCount);
+	let filteredObjects = $derived(
+		objects.filter(o =>
+			objectFilter === '' ||
+			o.name.toLowerCase().includes(objectFilter.toLowerCase()) ||
+			o.id.toLowerCase().includes(objectFilter.toLowerCase())
+		)
+	);
+
+	function getSelectedUrl(): string {
+		return DRIVE_TUNNELS.find(t => t.id === selectedTunnel)?.url ?? DRIVE_TUNNELS[0].url;
+	}
+
+	function switchTunnel(id: TunnelId) {
+		if (id === selectedTunnel) return;
+		selectedTunnel = id;
+		// Reconnect with the new URL — clear vehicle list so it re-fetches
+		vehicleList.set([]);
+		disconnect();
+		connect(getSelectedUrl());
+	}
+
+	let connected = $derived($driveConnected);
+	let state = $derived($sessionState);
+	let currentTelemetry = $derived($telemetry);
+	let gamepad = $derived($gamepadConnected);
+	let isCalibrated = $derived($calibrated);
+	let wheelReady = $derived(inputMode === 'keyboard' || isCalibrated);
+	let error = $derived($lastError);
+
+	$effect(() => {
+		if ($sessionState === 'driving') {
+			startControlLoop();
+		}
+	});
+
+	function cleanupSession() {
+		stopControlLoop();
+		stopPolling();
+		stopKeyboardInput();
+		setOnFrame(null);
+		if (state === 'driving' || state === 'ready' || state === 'reconstructing') {
+			endSession();
+		}
+		disconnect();
+	}
+
+	// Request vehicle list and scenarios once connected
+	$effect(() => {
+		if ($driveConnected && $vehicleList.length === 0) {
+			requestVehicles();
+			requestScenarios();
+		}
+	});
+
+	onMount(async () => {
+		startPolling();
+		startKeyboardInput();
+		connect(getSelectedUrl());
+
+		setOnFrame((blob: Blob) => {
+			if (cameraViewRef) {
+				cameraViewRef.pushFrame(blob);
+			}
+		});
+
+		// Fetch map data for mini-map and coordinate conversion
+		try {
+			mapData = await fetchMapDataFull();
+		} catch {
+			console.warn('Failed to load map data for mini-map');
+		}
+	});
+
+	onDestroy(() => {
+		cleanupSession();
+	});
+
+	// Auto-load scenario when session becomes driving
+	$effect(() => {
+		if ($sessionState === 'driving' && selectedScenario) {
+			loadScenario(selectedScenario);
+			selectedScenario = '';
+		}
+	});
+
+	function handleQuickStart() {
+		const now = new Date();
+		const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle);
+	}
+
+	function handleSaveScenario() {
+		const name = scenarioName.trim();
+		if (!name) return;
+		saveScenario(name);
+		scenarioName = '';
+		showSaveDialog = false;
+	}
+
+	// V2X zone proximity check — runs on every telemetry update during driving
+	$effect(() => {
+		if ($sessionState !== 'driving' || !mapData?.geo_ref) return;
+		const t = $telemetry;
+		const alerts = checkZoneProximity(
+			t.pos[0], t.pos[1],
+			mapData.geo_ref.origin_lat, mapData.geo_ref.origin_lon
+		);
+		if (alerts.length > 0) {
+			v2xAlerts.update((existing) => [...existing, ...alerts]);
+		}
+	});
+
+	function handleEndSession() {
+		stopControlLoop();
+		resetZoneProximity();
+		endSession();
+	}
+
+	function handleCameraSwitch(view: CameraView) {
+		activeCamera = view;
+		switchCamera(view);
+	}
+
+	function handleCalibrationComplete() {
+		showCalibration = false;
+	}
+
+	function setInputMode(mode: InputMode) {
+		inputMode = mode;
+	}
+
+	function startControlLoop() {
+		if (controlLoopId !== null) return;
+		function loop() {
+			const input = inputMode === 'wheel' ? $normalizedInput : $keyboardInput;
+			sendControl(input.steer, input.throttle, input.brake, input.reverse);
+			controlLoopId = requestAnimationFrame(loop);
+		}
+		controlLoopId = requestAnimationFrame(loop);
+	}
+
+	function stopControlLoop() {
+		if (controlLoopId !== null) {
+			cancelAnimationFrame(controlLoopId);
+			controlLoopId = null;
+		}
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+		if (e.key === 'Escape') {
+			if (showObjectPlacer) {
+				showObjectPlacer = false;
+			} else if (showV2xPlacer) {
+				showV2xPlacer = false;
+			} else if (state === 'driving' || state === 'ready') {
+				handleEndSession();
+			}
+		}
+		if (state !== 'driving') return;
+		if (e.key === 'r') {
+			respawnVehicle();
+		}
+		if (e.key === 'p' || e.key === 'P') {
+			showObjectPlacer = !showObjectPlacer;
+			showV2xPlacer = false;
+			if (showObjectPlacer && objects.length === 0) {
+				requestObjects();
+			}
+		}
+		if (e.key === 'v' || e.key === 'V') {
+			showV2xPlacer = !showV2xPlacer;
+			showObjectPlacer = false;
+		}
+		if ((e.key === 'u' || e.key === 'U') && !showObjectPlacer && !showV2xPlacer) {
+			undoPlace();
+		}
+	}
+</script>
+
+<svelte:head>
+	<title>V2X Drive</title>
+</svelte:head>
+
+<svelte:window onkeydown={handleKeydown} onbeforeunload={cleanupSession} />
+
+{#if showCalibration}
+	<CalibrationWizard onComplete={handleCalibrationComplete} />
+{/if}
+
+<div class="h-screen w-screen bg-black relative overflow-hidden">
+	{#if state === 'idle' || state === 'connecting'}
+		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
+			<!-- Subtle radial glow behind card -->
+			<div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+				<div class="w-[600px] h-[600px] rounded-full bg-accent/5 blur-[120px]"></div>
+			</div>
+
+			<div class="relative w-[420px] p-8 bg-gray-900/80 backdrop-blur-xl rounded-2xl border border-gray-800/60 text-center shadow-2xl shadow-black/50">
+				{#if !connected}
+					<div class="py-12">
+						<!-- Pulsing ring loader -->
+						<div class="relative w-16 h-16 mx-auto mb-5">
+							<div class="absolute inset-0 border-2 border-accent/30 rounded-full animate-ping"></div>
+							<div class="absolute inset-0 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+							<div class="absolute inset-2 border border-gray-700 rounded-full"></div>
+						</div>
+						<p class="font-body text-sm text-gray-400 tracking-wide">CONNECTING TO DRIVE SERVER</p>
+						<div class="mt-3 flex justify-center gap-1">
+							<div class="w-1 h-1 bg-accent/60 rounded-full animate-pulse"></div>
+							<div class="w-1 h-1 bg-accent/60 rounded-full animate-pulse" style="animation-delay: 0.2s"></div>
+							<div class="w-1 h-1 bg-accent/60 rounded-full animate-pulse" style="animation-delay: 0.4s"></div>
+						</div>
+					</div>
+				{:else}
+					<!-- Title -->
+					<div class="mb-6">
+						<h2 class="font-display text-2xl font-bold text-white tracking-widest uppercase">V2X Drive</h2>
+						<div class="mt-1.5 mx-auto w-12 h-0.5 bg-accent rounded-full"></div>
+						<p class="mt-2 font-body text-xs text-gray-500 tracking-wider uppercase">CARLA Simulation</p>
+					</div>
+
+					<!-- Input mode toggle -->
+					<div class="mb-5">
+						<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Input</label>
+						<div class="flex gap-2">
+							<button onclick={() => setInputMode('keyboard')}
+								class="flex-1 group relative px-4 py-3 rounded-xl text-sm font-body tracking-wide transition-all duration-200 cursor-pointer
+								{inputMode === 'keyboard'
+									? 'bg-gray-800 text-white border border-accent/50 shadow-[0_0_15px_rgba(220,38,38,0.15)]'
+									: 'bg-gray-800/50 text-gray-500 border border-gray-800 hover:border-gray-700 hover:text-gray-300'}">
+								<!-- Keyboard icon -->
+								<svg class="w-5 h-5 mx-auto mb-1.5 {inputMode === 'keyboard' ? 'text-accent' : 'text-gray-600 group-hover:text-gray-400'} transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+									<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
+								</svg>
+								KEYBOARD
+							</button>
+							<button onclick={() => setInputMode('wheel')}
+								class="flex-1 group relative px-4 py-3 rounded-xl text-sm font-body tracking-wide transition-all duration-200 cursor-pointer
+								{inputMode === 'wheel'
+									? 'bg-gray-800 text-white border border-accent/50 shadow-[0_0_15px_rgba(220,38,38,0.15)]'
+									: 'bg-gray-800/50 text-gray-500 border border-gray-800 hover:border-gray-700 hover:text-gray-300'}
+								{!gamepad ? 'opacity-40' : ''}">
+								<!-- Wheel icon -->
+								<svg class="w-5 h-5 mx-auto mb-1.5 {inputMode === 'wheel' ? 'text-accent' : 'text-gray-600 group-hover:text-gray-400'} transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+									<circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" /><path d="M12 3v6M12 15v6M3 12h6M15 12h6" />
+								</svg>
+								WHEEL {gamepad ? '' : '(N/A)'}
+								{#if inputMode === 'wheel' && gamepad}
+									<button onclick={(e) => { e.stopPropagation(); showCalibration = true; }}
+										class="absolute -top-1 -right-1 w-5 h-5 bg-gray-700 hover:bg-gray-600 rounded-full flex items-center justify-center cursor-pointer transition-colors"
+										title="Calibrate">
+										<svg class="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+											<path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+											<path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+										</svg>
+									</button>
+								{/if}
+							</button>
+						</div>
+					</div>
+
+					<!-- Tunnel selector -->
+					<div class="mb-4">
+						<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Tunnel</label>
+						<div class="flex bg-gray-800/50 rounded-xl p-1 border border-gray-800">
+							{#each DRIVE_TUNNELS as tunnel}
+								<button onclick={() => switchTunnel(tunnel.id)}
+									class="flex-1 px-3 py-2 rounded-lg text-xs font-body tracking-wider transition-all duration-200 cursor-pointer
+									{selectedTunnel === tunnel.id
+										? 'bg-gray-700 text-white shadow-sm'
+										: 'text-gray-500 hover:text-gray-300'}">
+									{tunnel.label.toUpperCase()}
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<!-- Vehicle picker -->
+					<div class="mb-3">
+						<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Vehicle</label>
+						{#if vehicles.length > 0}
+							<div class="relative">
+								<select
+									bind:value={selectedVehicle}
+									class="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-white focus:outline-none focus:border-accent/50 focus:shadow-[0_0_10px_rgba(220,38,38,0.1)] appearance-none cursor-pointer transition-all duration-200"
+								>
+									{#each vehicles as v}
+										<option value={v.id}>
+											{v.name}{v.wheels === 2 ? ' (bike)' : ''}
+										</option>
+									{/each}
+								</select>
+								<svg class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+									<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+								</svg>
+							</div>
+						{:else}
+							<div class="px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-gray-600 text-center">
+								<span class="inline-block w-3 h-3 border border-gray-600 border-t-transparent rounded-full animate-spin mr-2 align-middle"></span>
+								Loading vehicles...
+							</div>
+						{/if}
+					</div>
+
+					<!-- Scenario preset -->
+					{#if scenarios.length > 0}
+						<div class="mb-5">
+							<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Scenario</label>
+							<div class="relative">
+								<select
+									bind:value={selectedScenario}
+									class="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-white focus:outline-none focus:border-accent/50 focus:shadow-[0_0_10px_rgba(220,38,38,0.1)] appearance-none cursor-pointer transition-all duration-200"
+								>
+									<option value="">No scenario (empty world)</option>
+									{#each scenarios as s}
+										<option value={s.file}>
+											{s.name} ({s.object_count} objects)
+										</option>
+									{/each}
+								</select>
+								<svg class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+									<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+								</svg>
+							</div>
+						</div>
+					{/if}
+
+					<!-- V2X Zone Editor button -->
+					<div class="mb-4">
+						<button onclick={() => { showZoneEditor = true; }}
+							class="w-full py-2.5 bg-gray-800/50 hover:bg-gray-800 border border-gray-700 hover:border-cyan-500/50 rounded-xl text-xs font-body tracking-wider text-gray-300 hover:text-cyan-300 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2">
+							<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m6-6v8.25m.503 3.498l4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 00-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0z" />
+							</svg>
+							PLAN V2X ZONES
+							{#if numZones > 0}
+								<span class="px-1.5 py-0.5 bg-cyan-600/30 rounded text-[10px] text-cyan-400">{numZones}</span>
+							{/if}
+						</button>
+					</div>
+
+					<!-- Action button -->
+					{#if inputMode === 'wheel' && !isCalibrated}
+						<button onclick={() => showCalibration = true}
+							class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
+							Calibrate Wheel
+						</button>
+						<p class="mt-2 text-[10px] font-body text-yellow-500/80 tracking-wider">CALIBRATION REQUIRED BEFORE DRIVING</p>
+					{:else}
+						<button onclick={handleQuickStart}
+							class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
+							Start Driving
+						</button>
+					{/if}
+
+					<!-- Keyboard shortcuts or wheel status -->
+					<div class="mt-5 pt-4 border-t border-gray-800/60">
+						{#if inputMode === 'keyboard'}
+							<div class="grid grid-cols-2 gap-x-6 gap-y-1.5 text-left">
+								{#each [
+									['W', 'Throttle'], ['S', 'Reverse'],
+									['A/D', 'Steer'], ['Space', 'Brake'],
+									['R', 'Respawn'], ['1-4', 'Camera'],
+									['P', 'Place Obj'], ['V', 'V2X Signal'],
+									['U', 'Undo']
+								] as [key, action]}
+									<div class="flex items-center gap-2">
+										<kbd class="px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-[10px] font-mono text-gray-400 min-w-[28px] text-center">{key}</kbd>
+										<span class="text-[10px] font-body text-gray-600 tracking-wide">{action}</span>
+									</div>
+								{/each}
+							</div>
+						{:else if gamepad && isCalibrated}
+							<div class="flex items-center justify-center gap-2">
+								<div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.5)]"></div>
+								<span class="text-xs font-body text-green-400/80 tracking-wider">WHEEL CALIBRATED — READY</span>
+							</div>
+						{:else if gamepad}
+							<div class="flex items-center justify-center gap-2">
+								<div class="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+								<span class="text-xs font-body text-yellow-500/80 tracking-wider">CALIBRATE WHEEL TO CONTINUE</span>
+							</div>
+						{:else}
+							<div class="flex items-center justify-center gap-2">
+								<div class="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+								<span class="text-xs font-body text-yellow-500/80 tracking-wider">CONNECT WHEEL OR USE KEYBOARD</span>
+							</div>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		</div>
+
+	{:else if state === 'reconstructing'}
+		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
+			<div class="text-center">
+				<div class="relative w-16 h-16 mx-auto mb-5">
+					<div class="absolute inset-0 border-2 border-accent/20 rounded-full animate-ping"></div>
+					<div class="absolute inset-0 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
+				</div>
+				<p class="font-display text-lg text-white font-bold tracking-widest uppercase">Loading Scene</p>
+				<p class="mt-1 font-body text-xs text-gray-500 tracking-wider">Reconstructing environment...</p>
+			</div>
+		</div>
+
+	{:else if state === 'driving'}
+		<!-- Full-screen camera — no header, everything overlays -->
+		<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
+		<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+
+		<!-- V2X toast notifications -->
+		<V2xToast />
+
+		<!-- Mini-map with car position and V2X zones -->
+		{#if mapData}
+			<DriveMiniMap
+				roadLines={mapData.road_network}
+				originLat={mapData.geo_ref.origin_lat}
+				originLon={mapData.geo_ref.origin_lon}
+			/>
+		{/if}
+
+		<!-- All buttons overlay on the video -->
+		<div class="absolute top-2 right-2 z-20 flex gap-1.5 pointer-events-auto">
+			{#each [{ id: 'chase', label: 'Chase' }, { id: 'hood', label: 'Hood' }, { id: 'bird', label: 'Bird' }, { id: 'free', label: 'Free' }] as view}
+				<button onclick={() => handleCameraSwitch(view.id as CameraView)}
+					class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors {activeCamera === view.id
+						? 'bg-white/25 text-white'
+						: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
+					{view.label}
+				</button>
+			{/each}
+			<button onclick={() => respawnVehicle()}
+				class="px-2.5 py-1.5 bg-blue-600/70 hover:bg-blue-600 rounded-lg text-xs font-medium text-white transition-colors">
+				Respawn
+			</button>
+			<button onclick={handleEndSession}
+				class="px-2.5 py-1.5 bg-red-600/70 hover:bg-red-600 rounded-lg text-xs font-medium text-white transition-colors">
+				End
+			</button>
+		</div>
+
+		<!-- Input mode + tunnel + connection — top left, subtle -->
+		<div class="absolute top-2 left-2 z-20 flex items-center gap-2 pointer-events-auto">
+			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
+				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
+			</span>
+			{#if inputMode === 'wheel' && gamepad}
+				<button onclick={() => showCalibration = true}
+					class="px-2 py-1 bg-black/50 hover:bg-black/70 rounded text-[10px] text-gray-400 hover:text-white transition-colors">
+					Calibrate
+				</button>
+			{/if}
+			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
+				{DRIVE_TUNNELS.find(t => t.id === selectedTunnel)?.label}
+			</span>
+			<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
+			{#if numPlaced > 0}
+				<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-yellow-300">
+					{numPlaced} placed
+				</span>
+			{/if}
+			{#if numV2xSignals > 0}
+				<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-cyan-300">
+					{numV2xSignals} signals
+				</span>
+			{/if}
+		</div>
+
+		<!-- V2X Signal Placer Panel -->
+		{#if showV2xPlacer}
+			<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />
+		{/if}
+
+		<!-- Object Placer Panel — slide-in from bottom-left -->
+		{#if showObjectPlacer}
+			<div class="absolute bottom-16 left-2 z-30 w-72 max-h-80 bg-gray-900/95 border border-gray-700 rounded-xl overflow-hidden pointer-events-auto flex flex-col">
+				<div class="p-2 border-b border-gray-700 flex items-center gap-2">
+					<input
+						type="text"
+						bind:value={objectFilter}
+						placeholder="Search objects..."
+						class="flex-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+					/>
+					<button onclick={() => undoPlace()}
+						class="px-2 py-1 bg-yellow-600/70 hover:bg-yellow-600 rounded text-xs text-white"
+						title="Undo last (U)">
+						Undo
+					</button>
+					<button onclick={() => { showObjectPlacer = false; }}
+						class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300">
+						X
+					</button>
+				</div>
+				<div class="overflow-y-auto flex-1">
+					{#each filteredObjects as obj}
+						<button
+							onclick={() => { spawnObject(obj.id); }}
+							class="w-full px-3 py-1.5 text-left text-xs hover:bg-gray-800 transition-colors flex items-center gap-2"
+						>
+							<span class="w-1.5 h-1.5 rounded-full {obj.category === 'vehicle' ? 'bg-blue-400' : 'bg-orange-400'}"></span>
+							<span class="text-white truncate">{obj.name}</span>
+							<span class="text-gray-500 text-[10px] ml-auto">{obj.category}</span>
+						</button>
+					{/each}
+					{#if filteredObjects.length === 0}
+						<p class="p-3 text-xs text-gray-500 text-center">
+							{objects.length === 0 ? 'Loading...' : 'No matches'}
+						</p>
+					{/if}
+				</div>
+				<div class="p-1.5 border-t border-gray-700">
+					{#if showSaveDialog}
+						<div class="flex gap-1">
+							<input
+								type="text"
+								bind:value={scenarioName}
+								placeholder="Scenario name..."
+								class="flex-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs text-white placeholder-gray-500 focus:outline-none"
+								onkeydown={(e) => { if (e.key === 'Enter') handleSaveScenario(); if (e.key === 'Escape') showSaveDialog = false; }}
+							/>
+							<button onclick={handleSaveScenario}
+								class="px-2 py-1 bg-green-600/70 hover:bg-green-600 rounded text-xs text-white">
+								Save
+							</button>
+						</div>
+					{:else}
+						<div class="flex items-center justify-between">
+							<span class="text-[10px] text-gray-500">P toggle | Click to place | U undo</span>
+							{#if numPlaced > 0}
+								<button onclick={() => { showSaveDialog = true; }}
+									class="px-2 py-0.5 bg-green-600/50 hover:bg-green-600 rounded text-[10px] text-white">
+									Save Scene
+								</button>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
+
+	{:else if state === 'error'}
+		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
+			<div class="text-center max-w-md px-8">
+				<div class="w-12 h-12 mx-auto mb-4 rounded-full border-2 border-accent/50 flex items-center justify-center">
+					<svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+						<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+					</svg>
+				</div>
+				<p class="font-display text-lg text-white font-bold tracking-widest uppercase mb-2">Error</p>
+				<p class="text-sm font-body text-gray-400 mb-6">{error}</p>
+				<button onclick={() => sessionState.set('idle')}
+					class="px-8 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl text-sm font-body tracking-wider text-white transition-all duration-200 cursor-pointer">
+					TRY AGAIN
+				</button>
+			</div>
+		</div>
+	{/if}
+
+	{#if showZoneEditor}
+		<V2xZoneEditor onclose={() => { showZoneEditor = false; }} />
+	{/if}
+</div>

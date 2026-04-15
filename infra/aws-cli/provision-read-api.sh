@@ -23,10 +23,14 @@ READ_POLICY_NAME="${READ_POLICY_NAME:-v2x-backend-detections-ddb-read}"
 VIDEO_AWS_REGION="${VIDEO_AWS_REGION:-us-west-2}"
 VIDEO_STREAM_PREFIX="${VIDEO_STREAM_PREFIX:-v2x-backend-cam-}"
 VIDEO_HLS_EXPIRES_SECONDS="${VIDEO_HLS_EXPIRES_SECONDS:-300}"
+SNAPSHOT_URL_EXPIRES_SECONDS="${SNAPSHOT_URL_EXPIRES_SECONDS:-300}"
+DEMO_VIDEOS_PREFIX="${DEMO_VIDEOS_PREFIX:-demo-videos/}"
+DEMO_VIDEO_URL_EXPIRES_SECONDS="${DEMO_VIDEO_URL_EXPIRES_SECONDS:-3600}"
 
 export AWS_REGION
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+STATE_BUCKET="${STATE_BUCKET:-v2x-backend-state-${ACCOUNT_ID}-${AWS_REGION}}"
 
 echo "Region: ${AWS_REGION}"
 echo "Account: ${ACCOUNT_ID}"
@@ -67,6 +71,20 @@ if [[ "${ATTACH_DDB_READ_POLICY}" == "true" ]]; then
         "kinesisvideo:GetHLSStreamingSessionURL"
       ],
       "Resource":"*"
+    },
+    {
+      "Effect":"Allow",
+      "Action":[ "s3:ListBucket" ],
+      "Resource":[ "arn:aws:s3:::${STATE_BUCKET}" ]
+    },
+    {
+      "Effect":"Allow",
+      "Action":[ "s3:GetObject" ],
+      "Resource":[
+        "arn:aws:s3:::${STATE_BUCKET}/api/*",
+        "arn:aws:s3:::${STATE_BUCKET}/snapshots/*",
+        "arn:aws:s3:::${STATE_BUCKET}/${DEMO_VIDEOS_PREFIX}*"
+      ]
     }
   ]
 }
@@ -83,8 +101,10 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 cat > "${WORKDIR}/index.py" <<PY
 import base64
 import json
+import mimetypes
 import os
 from decimal import Decimal
+from urllib.parse import quote
 from botocore.config import Config as BotoConfig
 
 import boto3
@@ -97,12 +117,18 @@ MAX_LIMIT = int(os.environ.get("MAX_LIMIT", "200"))
 VIDEO_AWS_REGION = os.environ.get("VIDEO_AWS_REGION", "${VIDEO_AWS_REGION}")
 VIDEO_STREAM_PREFIX = os.environ.get("VIDEO_STREAM_PREFIX", "${VIDEO_STREAM_PREFIX}")
 VIDEO_HLS_EXPIRES_SECONDS = int(os.environ.get("VIDEO_HLS_EXPIRES_SECONDS", "${VIDEO_HLS_EXPIRES_SECONDS}"))
+STATE_BUCKET = os.environ.get("STATE_BUCKET", "${STATE_BUCKET}")
+SNAPSHOT_URL_EXPIRES_SECONDS = int(os.environ.get("SNAPSHOT_URL_EXPIRES_SECONDS", "${SNAPSHOT_URL_EXPIRES_SECONDS}"))
+DEMO_VIDEOS_PREFIX = os.environ.get("DEMO_VIDEOS_PREFIX", "${DEMO_VIDEOS_PREFIX}")
+DEMO_VIDEO_URL_EXPIRES_SECONDS = int(os.environ.get("DEMO_VIDEO_URL_EXPIRES_SECONDS", "${DEMO_VIDEO_URL_EXPIRES_SECONDS}"))
 
 ddb = boto3.resource("dynamodb")
 table = ddb.Table(TABLE_NAME)
 video_client = boto3.client("kinesisvideo", region_name=VIDEO_AWS_REGION, config=BotoConfig(retries={"max_attempts": 3}))
+s3_client = boto3.client("s3")
 
 ALLOWED_CAMERA_IDS = {"ch1", "ch2", "ch3", "ch4"}
+ALLOWED_DEMO_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
 
 def _jsonable(value):
     if isinstance(value, Decimal):
@@ -142,6 +168,137 @@ def _resp(status, body):
         },
         "body": json.dumps(body),
     }
+
+def _api_base_url(event):
+    headers = event.get("headers") or {}
+    request_context = event.get("requestContext") or {}
+    proto = headers.get("x-forwarded-proto", "https")
+    domain_name = request_context.get("domainName") or headers.get("host", "")
+    stage = request_context.get("stage") or ""
+
+    if stage and stage != ("$" + "default"):
+        return f"{proto}://{domain_name}/{stage}"
+    return f"{proto}://{domain_name}"
+
+def _get_s3_json(key):
+    try:
+        response = s3_client.get_object(Bucket=STATE_BUCKET, Key=key)
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "ClientError")
+        status = 404 if error_code in {"NoSuchKey", "NoSuchBucket", "404", "NotFound"} else 502
+        return None, _resp(status, {"error": "state_asset_unavailable", "detail": error_code, "key": key})
+
+    body = response["Body"].read().decode("utf-8")
+    try:
+        return json.loads(body), None
+    except json.JSONDecodeError:
+        return None, _resp(502, {"error": "state_asset_invalid_json", "key": key})
+
+def _snapshot_api_url(event, object_id, snapshot_timestamp):
+    base_url = _api_base_url(event)
+    encoded_object_id = quote(str(object_id), safe="")
+    if snapshot_timestamp:
+        encoded_version = quote(str(snapshot_timestamp), safe="")
+        return f"{base_url}/snapshots/{encoded_object_id}/latest?v={encoded_version}"
+    return f"{base_url}/snapshots/{encoded_object_id}/latest"
+
+def _get_state(event):
+    payload, error = _get_s3_json("api/state.json")
+    if error:
+        return error
+
+    objects = []
+    for item in payload.get("objects", []) or []:
+        obj = dict(item)
+        if obj.get("snapshot_url") and obj.get("object_id"):
+            obj["snapshot_url"] = _snapshot_api_url(
+                event,
+                obj["object_id"],
+                obj.get("snapshot_timestamp"),
+            )
+        objects.append(obj)
+    payload["objects"] = objects
+    return _resp(200, payload)
+
+def _get_map_data():
+    payload, error = _get_s3_json("api/map-data.json")
+    if error:
+        return error
+    return _resp(200, payload)
+
+def _get_snapshot(object_id):
+    key = f"snapshots/{object_id}/latest.jpg"
+    try:
+        s3_client.head_object(Bucket=STATE_BUCKET, Key=key)
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "ClientError")
+        status = 404 if error_code in {"NoSuchKey", "404", "NotFound"} else 502
+        return _resp(
+            status,
+            {
+                "error": "snapshot_unavailable",
+                "objectId": object_id,
+                "detail": error_code,
+            },
+        )
+
+    signed_url = s3_client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": STATE_BUCKET, "Key": key},
+        ExpiresIn=SNAPSHOT_URL_EXPIRES_SECONDS,
+    )
+    return {
+        "statusCode": 307,
+        "headers": {
+            "location": signed_url,
+            "cache-control": "no-store",
+            "access-control-allow-origin": "*",
+        },
+        "body": "",
+    }
+
+def _demo_video_title(filename):
+    stem, _sep, _ext = filename.rpartition(".")
+    source = stem or filename
+    parts = source.replace("_", " ").replace("-", " ").split()
+    return " ".join(parts) if parts else filename
+
+def _get_demo_videos():
+    paginator = s3_client.get_paginator("list_objects_v2")
+    items = []
+
+    for page in paginator.paginate(Bucket=STATE_BUCKET, Prefix=DEMO_VIDEOS_PREFIX):
+        for obj in page.get("Contents", []) or []:
+            key = obj.get("Key", "")
+            if not key or key.endswith("/"):
+                continue
+
+            filename = key.rsplit("/", 1)[-1]
+            lower_name = filename.lower()
+            if not any(lower_name.endswith(ext) for ext in ALLOWED_DEMO_VIDEO_EXTENSIONS):
+                continue
+
+            signed_url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": STATE_BUCKET, "Key": key},
+                ExpiresIn=DEMO_VIDEO_URL_EXPIRES_SECONDS,
+            )
+            content_type = mimetypes.guess_type(filename)[0] or "video/mp4"
+            last_modified = obj.get("LastModified")
+            items.append(
+                {
+                    "key": key,
+                    "fileName": filename,
+                    "title": _demo_video_title(filename),
+                    "url": signed_url,
+                    "sizeBytes": obj.get("Size", 0),
+                    "lastModified": last_modified.isoformat() if last_modified else None,
+                    "contentType": content_type,
+                }
+            )
+
+    items.sort(key=lambda item: item.get("lastModified") or "", reverse=True)
+    return _resp(200, {"items": items})
 
 def _camera_stream_name(camera_id):
     return f"{VIDEO_STREAM_PREFIX}{camera_id}"
@@ -214,6 +371,19 @@ def handler(event, context):
         camera_id = path_params.get("camera_id") or path.split("/video/session/", 1)[1]
         return _get_hls_session(camera_id)
 
+    if path == "/demo-videos":
+        return _get_demo_videos()
+
+    if path == "/state":
+        return _get_state(event)
+
+    if path == "/map-data":
+        return _get_map_data()
+
+    if path.startswith("/snapshots/") and path.endswith("/latest"):
+        object_id = path_params.get("object_id") or path.split("/snapshots/", 1)[1].rsplit("/latest", 1)[0]
+        return _get_snapshot(object_id)
+
     if path.startswith("/detections/object/"):
         object_id = path_params.get("object_id") or path.split("/detections/object/", 1)[1]
         kwargs = {
@@ -276,6 +446,10 @@ def handler(event, context):
             {
                 "ok": True,
                 "routes": [
+                    "/demo-videos",
+                    "/state",
+                    "/map-data",
+                    "/snapshots/{object_id}/latest",
                     "/detections/recent",
                     "/detections/object/{object_id}",
                     "/detections/geohash/{geohash}",
@@ -296,7 +470,7 @@ if ! aws lambda get-function --function-name "${READ_LAMBDA_NAME}" >/dev/null 2>
     --handler index.handler \
     --role "${ROLE_ARN}" \
     --timeout 10 \
-    --environment "Variables={TABLE_NAME=${TABLE_NAME},GSI_NAME=gsi_geohash_time,MAX_LIMIT=200,VIDEO_AWS_REGION=${VIDEO_AWS_REGION},VIDEO_STREAM_PREFIX=${VIDEO_STREAM_PREFIX},VIDEO_HLS_EXPIRES_SECONDS=${VIDEO_HLS_EXPIRES_SECONDS}}" \
+    --environment "Variables={TABLE_NAME=${TABLE_NAME},GSI_NAME=gsi_geohash_time,MAX_LIMIT=200,VIDEO_AWS_REGION=${VIDEO_AWS_REGION},VIDEO_STREAM_PREFIX=${VIDEO_STREAM_PREFIX},VIDEO_HLS_EXPIRES_SECONDS=${VIDEO_HLS_EXPIRES_SECONDS},STATE_BUCKET=${STATE_BUCKET},SNAPSHOT_URL_EXPIRES_SECONDS=${SNAPSHOT_URL_EXPIRES_SECONDS},DEMO_VIDEOS_PREFIX=${DEMO_VIDEOS_PREFIX},DEMO_VIDEO_URL_EXPIRES_SECONDS=${DEMO_VIDEO_URL_EXPIRES_SECONDS}}" \
     --zip-file "fileb://${WORKDIR}/function.zip" >/dev/null
 else
   aws lambda update-function-code \
@@ -306,12 +480,12 @@ else
       aws lambda update-function-configuration \
         --function-name "${READ_LAMBDA_NAME}" \
         --timeout 10 \
-        --environment "Variables={TABLE_NAME=${TABLE_NAME},GSI_NAME=gsi_geohash_time,MAX_LIMIT=200,VIDEO_AWS_REGION=${VIDEO_AWS_REGION},VIDEO_STREAM_PREFIX=${VIDEO_STREAM_PREFIX},VIDEO_HLS_EXPIRES_SECONDS=${VIDEO_HLS_EXPIRES_SECONDS}}" >/dev/null || {
+        --environment "Variables={TABLE_NAME=${TABLE_NAME},GSI_NAME=gsi_geohash_time,MAX_LIMIT=200,VIDEO_AWS_REGION=${VIDEO_AWS_REGION},VIDEO_STREAM_PREFIX=${VIDEO_STREAM_PREFIX},VIDEO_HLS_EXPIRES_SECONDS=${VIDEO_HLS_EXPIRES_SECONDS},STATE_BUCKET=${STATE_BUCKET},SNAPSHOT_URL_EXPIRES_SECONDS=${SNAPSHOT_URL_EXPIRES_SECONDS},DEMO_VIDEOS_PREFIX=${DEMO_VIDEOS_PREFIX},DEMO_VIDEO_URL_EXPIRES_SECONDS=${DEMO_VIDEO_URL_EXPIRES_SECONDS}}" >/dev/null || {
       aws lambda wait function-updated --function-name "${READ_LAMBDA_NAME}"
       aws lambda update-function-configuration \
         --function-name "${READ_LAMBDA_NAME}" \
         --timeout 10 \
-        --environment "Variables={TABLE_NAME=${TABLE_NAME},GSI_NAME=gsi_geohash_time,MAX_LIMIT=200,VIDEO_AWS_REGION=${VIDEO_AWS_REGION},VIDEO_STREAM_PREFIX=${VIDEO_STREAM_PREFIX},VIDEO_HLS_EXPIRES_SECONDS=${VIDEO_HLS_EXPIRES_SECONDS}}" >/dev/null
+        --environment "Variables={TABLE_NAME=${TABLE_NAME},GSI_NAME=gsi_geohash_time,MAX_LIMIT=200,VIDEO_AWS_REGION=${VIDEO_AWS_REGION},VIDEO_STREAM_PREFIX=${VIDEO_STREAM_PREFIX},VIDEO_HLS_EXPIRES_SECONDS=${VIDEO_HLS_EXPIRES_SECONDS},STATE_BUCKET=${STATE_BUCKET},SNAPSHOT_URL_EXPIRES_SECONDS=${SNAPSHOT_URL_EXPIRES_SECONDS},DEMO_VIDEOS_PREFIX=${DEMO_VIDEOS_PREFIX},DEMO_VIDEO_URL_EXPIRES_SECONDS=${DEMO_VIDEO_URL_EXPIRES_SECONDS}}" >/dev/null
     }
 fi
 
@@ -339,6 +513,10 @@ INTEGRATION_ID="$(aws apigatewayv2 create-integration \
 aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /detections/recent" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
 aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /detections/object/{object_id}" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
 aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /detections/geohash/{geohash}" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
+aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /demo-videos" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
+aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /state" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
+aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /map-data" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
+aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /snapshots/{object_id}/latest" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
 aws apigatewayv2 create-route --api-id "${API_ID}" --route-key "GET /video/session/{camera_id}" --target "integrations/${INTEGRATION_ID}" >/dev/null || true
 
 if [[ "${STAGE_NAME}" == "\$default" ]]; then

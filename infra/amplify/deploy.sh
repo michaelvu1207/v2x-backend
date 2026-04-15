@@ -20,9 +20,10 @@ BRANCH_NAME="${BRANCH_NAME:-main}"
 API_BASE_URL="${API_BASE_URL:-}"
 STATE_BASE_URL="${STATE_BASE_URL:-}"
 STATE_BUCKET="${STATE_BUCKET:-}"
-STATE_PATH="${STATE_PATH:-/api/state.json}"
-MAP_DATA_PATH="${MAP_DATA_PATH:-/api/map-data.json}"
+STATE_PATH="${STATE_PATH:-/state}"
+MAP_DATA_PATH="${MAP_DATA_PATH:-/map-data}"
 VIDEO_CAMERA_IDS="${VIDEO_CAMERA_IDS:-[\"ch1\",\"ch2\",\"ch3\",\"ch4\"]}"
+DEMO_VIDEOS_PATH="${DEMO_VIDEOS_PATH:-/demo-videos}"
 
 if [[ -z "${API_BASE_URL}" ]]; then
   echo "API_BASE_URL is required (from provision-read-api.sh output)." >&2
@@ -30,14 +31,14 @@ if [[ -z "${API_BASE_URL}" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SITE_DIR="${ROOT}/apps/v2x-digital-twin-web"
+SITE_DIR="${ROOT}/apps/web"
 
 if [[ -z "${STATE_BASE_URL}" ]]; then
-  if [[ -z "${STATE_BUCKET}" ]]; then
-    echo "STATE_BASE_URL or STATE_BUCKET is required." >&2
-    exit 1
+  if [[ -n "${STATE_BUCKET}" ]]; then
+    STATE_BASE_URL="https://${STATE_BUCKET}.s3.us-west-1.amazonaws.com"
+  else
+    STATE_BASE_URL="${API_BASE_URL}"
   fi
-  STATE_BASE_URL="https://${STATE_BUCKET}.s3.us-west-1.amazonaws.com"
 fi
 
 WORKDIR="$(mktemp -d)"
@@ -55,6 +56,7 @@ cat > "${BUILD_DIR}/config.json" <<JSON
   "stateBaseUrl": "${STATE_BASE_URL}",
   "statePath": "${STATE_PATH}",
   "mapDataPath": "${MAP_DATA_PATH}",
+  "demoVideosPath": "${DEMO_VIDEOS_PATH}",
   "videoCameraIds": ${VIDEO_CAMERA_IDS}
 }
 JSON

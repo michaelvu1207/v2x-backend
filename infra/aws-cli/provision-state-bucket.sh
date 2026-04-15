@@ -31,35 +31,15 @@ fi
 
 aws s3api put-public-access-block \
   --bucket "${STATE_BUCKET}" \
-  --public-access-block-configuration BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false >/dev/null
+  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true >/dev/null
 
-aws s3api put-bucket-cors \
+aws s3api put-bucket-acl \
   --bucket "${STATE_BUCKET}" \
-  --cors-configuration '{
-    "CORSRules": [{
-      "AllowedHeaders": ["*"],
-      "AllowedMethods": ["GET", "HEAD"],
-      "AllowedOrigins": ["*"],
-      "ExposeHeaders": ["ETag", "Content-Length"],
-      "MaxAgeSeconds": 3000
-    }]
-  }' >/dev/null
+  --acl private >/dev/null 2>&1 || true
 
-aws s3api put-bucket-policy \
-  --bucket "${STATE_BUCKET}" \
-  --policy "{
-    \"Version\": \"2012-10-17\",
-    \"Statement\": [{
-      \"Sid\": \"PublicReadV2XBackendAssets\",
-      \"Effect\": \"Allow\",
-      \"Principal\": \"*\",
-      \"Action\": [\"s3:GetObject\"],
-      \"Resource\": [
-        \"arn:aws:s3:::${STATE_BUCKET}/api/*\",
-        \"arn:aws:s3:::${STATE_BUCKET}/snapshots/*\"
-      ]
-    }]
-  }" >/dev/null
+if aws s3api get-bucket-policy --bucket "${STATE_BUCKET}" >/dev/null 2>&1; then
+  aws s3api delete-bucket-policy --bucket "${STATE_BUCKET}" >/dev/null
+fi
 
 printf '%s' '{"objects":[],"bridge_status":{"status":"disconnected","carla_fps":0,"objects_tracked":0,"cameras_active":0,"last_heartbeat":null},"updated_at":null}' > "${WORKDIR}/state.json"
 printf '%s' '{"road_network":[]}' > "${WORKDIR}/map-data.json"
@@ -81,3 +61,4 @@ aws s3api put-object \
 echo "Done."
 echo "State bucket: ${STATE_BUCKET}"
 echo "State base URL: ${STATE_BASE_URL}"
+echo "Public access: blocked"

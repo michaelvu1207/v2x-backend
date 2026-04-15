@@ -4,7 +4,7 @@ This folder provisions the `v2x-backend` data plane in **`us-west-1`**:
 
 - MQTT ingest: IoT Core -> `v2x-backend-ingest` -> DynamoDB
 - Read API: HTTP API -> `v2x-backend-read`
-- Public state bucket for digital twin state + snapshots
+- Private state bucket for digital twin state + snapshots
 
 ## Security note
 
@@ -104,6 +104,11 @@ cd infra/aws-cli
 AWS_PROFILE="your-profile" AWS_REGION=us-west-1 ./provision-read-api.sh
 ```
 
+Optional env vars for `provision-read-api.sh` include:
+
+- `STATE_BUCKET` (defaults to `v2x-backend-state-<account-id>-us-west-1`)
+- `SNAPSHOT_URL_EXPIRES_SECONDS` (defaults to `300`)
+
 Example write request:
 
 ```bash
@@ -120,7 +125,7 @@ curl 'https://<api-id>.execute-api.us-west-1.amazonaws.com/detections/recent?lim
 
 ## State bucket
 
-Provision the dedicated public bucket for digital twin state assets:
+Provision the dedicated private bucket for digital twin state assets:
 
 ```bash
 cd infra/aws-cli
@@ -131,7 +136,21 @@ This creates a bucket named `v2x-backend-state-<account-id>-us-west-1` by defaul
 
 - `api/state.json`
 - `api/map-data.json`
-- public read access for `api/*` and `snapshots/*`
+- S3 Public Access Block enabled for the bucket
+- no public bucket policy or public ACLs
+
+The read API serves the browser-facing state assets from this private bucket:
+
+- `GET /state`
+- `GET /map-data`
+- `GET /snapshots/{object_id}/latest`
+
+Harden an existing state bucket:
+
+```bash
+cd infra/aws-cli
+AWS_PROFILE="your-profile" AWS_REGION=us-west-1 ./harden-state-bucket.sh
+```
 
 ## Video streams
 
