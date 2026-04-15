@@ -124,7 +124,7 @@
 		if (!map) return;
 
 		draw = new TerraDraw({
-			adapter: new TerraDrawMapLibreGLAdapter({ map, coordinatePrecision: 9 }),
+			adapter: new TerraDrawMapLibreGLAdapter({ map }),
 			modes: [
 				new TerraDrawRectangleMode(),
 				new TerraDrawPolygonMode(),
@@ -137,14 +137,19 @@
 			],
 		});
 
-		draw.start();
-		draw.setMode('rectangle');
-
-		draw.on('finish', (id) => {
+		// Register events BEFORE start
+		draw.on('finish', (id: any) => {
+			console.log('[ZoneEditor] finish event fired, id:', id);
 			if (!draw) return;
 			const snapshot = draw.getSnapshot();
-			const feature = snapshot.find((f) => f.id === id);
-			if (!feature || feature.geometry.type !== 'Polygon') return;
+			console.log('[ZoneEditor] snapshot:', snapshot.length, 'features');
+			const feature = snapshot.find((f: any) => f.id === id);
+			if (!feature) {
+				console.warn('[ZoneEditor] feature not found in snapshot for id:', id);
+				return;
+			}
+			console.log('[ZoneEditor] feature type:', feature.geometry.type);
+			if (feature.geometry.type !== 'Polygon') return;
 
 			const coords = feature.geometry.coordinates[0] as [number, number][];
 			const newZone: V2xZone = {
@@ -161,8 +166,8 @@
 			// Remove from terra-draw (we manage zones ourselves)
 			try {
 				draw.removeFeatures([id]);
-			} catch {
-				// Feature may already be removed
+			} catch (e) {
+				console.warn('[ZoneEditor] removeFeatures error:', e);
 			}
 
 			// Update the existing zones layer
@@ -174,6 +179,14 @@
 			zoneMessage = newZone.message;
 			zoneType = newZone.signal_type;
 		});
+
+		draw.on('change', (ids: any, type: any) => {
+			console.log('[ZoneEditor] change event:', type, 'ids:', ids);
+		});
+
+		draw.start();
+		draw.setMode('rectangle');
+		console.log('[ZoneEditor] terra-draw started in rectangle mode');
 	}
 
 	function setTool(tool: 'rectangle' | 'polygon' | 'select') {
