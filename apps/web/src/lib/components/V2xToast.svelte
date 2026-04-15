@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { v2xAlerts } from '$lib/stores/driveSocket';
+	import { activeZoneAlerts } from '$lib/stores/v2xZones';
 	import { onDestroy } from 'svelte';
 
 	// Auto-dismiss alerts after 5 seconds using _uid as key
@@ -54,8 +55,22 @@
 	}
 </script>
 
-{#if $v2xAlerts.length > 0}
+{#if $v2xAlerts.length > 0 || $activeZoneAlerts.length > 0}
 	<div class="absolute top-14 right-2 z-40 flex flex-col gap-2 pointer-events-auto max-w-xs">
+		<!-- Persistent zone alerts (show while inside, disappear on exit) -->
+		{#each $activeZoneAlerts as entry (entry.zone.id)}
+			<div class="rounded-lg border-l-4 px-3 py-2 shadow-lg backdrop-blur-sm animate-slide-in {typeColor(entry.zone.signal_type)}">
+				<div class="flex items-start gap-2">
+					<span class="text-lg leading-none">{typeIcon(entry.zone.signal_type)}</span>
+					<div class="flex-1 min-w-0">
+						<p class="text-[10px] font-bold text-white/70 uppercase tracking-wide">{typeLabel(entry.zone.signal_type)} ZONE</p>
+						<p class="text-sm font-medium text-white leading-tight">{entry.zone.message || entry.zone.name}</p>
+					</div>
+				</div>
+			</div>
+		{/each}
+
+		<!-- Server-side V2X alerts (auto-dismiss after 5s) -->
 		{#each $v2xAlerts as alert ((alert as any)._uid)}
 			<div class="rounded-lg border-l-4 px-3 py-2 shadow-lg backdrop-blur-sm animate-slide-in {typeColor(alert.signal_type)}">
 				<div class="flex items-start gap-2">

@@ -54,8 +54,8 @@
 	import V2xSignalPlacer from '$lib/components/V2xSignalPlacer.svelte';
 	import V2xZoneEditor from '$lib/components/V2xZoneEditor.svelte';
 	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
-	import { v2xZones, checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
-	import { v2xAlerts } from '$lib/stores/driveSocket';
+	import { checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
+	import { v2xZones } from '$lib/stores/v2xZones';
 	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
 
 	type InputMode = 'wheel' | 'keyboard';
@@ -185,13 +185,10 @@
 	$effect(() => {
 		if ($sessionState !== 'driving' || !mapData?.geo_ref) return;
 		const t = $telemetry;
-		const alerts = checkZoneProximity(
+		checkZoneProximity(
 			t.pos[0], t.pos[1],
 			mapData.geo_ref.origin_lat, mapData.geo_ref.origin_lon
 		);
-		if (alerts.length > 0) {
-			v2xAlerts.update((existing) => [...existing, ...alerts]);
-		}
 	});
 
 	function handleEndSession() {

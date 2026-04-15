@@ -103,57 +103,35 @@ export function pointInPolygon(
 
 // ── Proximity Detection ──
 
-// Track which zones the car is currently inside (for re-entry detection)
-const triggeredZones = new Set<string>();
+/** Zones the car is currently inside. Shown as persistent alerts. */
+export const activeZoneAlerts = writable<{ zone: V2xZone; }[]>([]);
 
 /**
  * Check if a CARLA position is inside any V2X zone.
- * Returns alerts for newly entered zones. Resets when the car exits.
+ * Updates activeZoneAlerts: adds zones on entry, removes on exit.
  */
 export function checkZoneProximity(
 	carlaX: number,
 	carlaY: number,
 	originLat: number,
 	originLon: number
-): V2xAlert[] {
+): void {
 	const gpsPos = carlaToGps(carlaX, carlaY, originLat, originLon);
 	const zones = get(v2xZones);
-	const alerts: V2xAlert[] = [];
 
-	const currentlyInside = new Set<string>();
+	const insideZones: { zone: V2xZone }[] = [];
 
 	for (const zone of zones) {
 		if (zone.polygon.length < 3) continue;
-
 		if (pointInPolygon(gpsPos, zone.polygon)) {
-			currentlyInside.add(zone.id);
-
-			// Fire alert only on entry (not while still inside)
-			if (!triggeredZones.has(zone.id)) {
-				alerts.push({
-					id: Date.now() + Math.random(),
-					message: zone.message || zone.name,
-					signal_type: zone.signal_type,
-					distance: 0,
-				});
-			}
+			insideZones.push({ zone });
 		}
 	}
 
-	// Update triggered state: zones we left get cleared for re-entry
-	for (const id of triggeredZones) {
-		if (!currentlyInside.has(id)) {
-			triggeredZones.delete(id);
-		}
-	}
-	for (const id of currentlyInside) {
-		triggeredZones.add(id);
-	}
-
-	return alerts;
+	activeZoneAlerts.set(insideZones);
 }
 
-/** Reset triggered state (call when ending a session). */
+/** Reset zone alerts (call when ending a session). */
 export function resetZoneProximity(): void {
-	triggeredZones.clear();
+	activeZoneAlerts.set([]);
 }
