@@ -537,7 +537,7 @@ class DriveSession:
         }
 
     def sync_v2x_zones(self, zones: list[dict]) -> dict:
-        """Draw V2X zone outlines on the CARLA ground using debug lines.
+        """Draw V2X zone outlines + hatching on the CARLA ground.
 
         Each zone is a dict with 'polygon' (list of [lon, lat] pairs),
         'signal_type', and 'color'. Lines are drawn at ground level
@@ -554,6 +554,12 @@ class DriveSession:
             "alert": carla.Color(255, 150, 50, 255),
             "info": carla.Color(60, 130, 255, 255),
         }
+        # Dimmer version for hatching
+        HATCH_COLORS = {
+            "warning": carla.Color(255, 60, 60, 80),
+            "alert": carla.Color(255, 150, 50, 80),
+            "info": carla.Color(60, 130, 255, 80),
+        }
 
         drawn = 0
         for zone in zones:
@@ -561,14 +567,15 @@ class DriveSession:
             if len(polygon) < 3:
                 continue
 
-            color = COLORS.get(zone.get("signal_type", "warning"), COLORS["warning"])
+            sig_type = zone.get("signal_type", "warning")
+            color = COLORS.get(sig_type, COLORS["warning"])
+            hatch_color = HATCH_COLORS.get(sig_type, HATCH_COLORS["warning"])
 
             # Convert GPS polygon vertices to CARLA locations at ground level
             carla_points = []
             for lon, lat in polygon:
                 try:
                     loc = gps_to_carla(self._map, lat, lon)
-                    # Lift slightly above ground to avoid z-fighting
                     loc.z += 0.15
                     carla_points.append(loc)
                 except Exception:
@@ -577,7 +584,7 @@ class DriveSession:
             if len(carla_points) < 3:
                 continue
 
-            # Draw outline: connect consecutive vertices
+            # Draw outline
             for i in range(len(carla_points)):
                 start = carla_points[i]
                 end = carla_points[(i + 1) % len(carla_points)]
@@ -587,9 +594,82 @@ class DriveSession:
                     color=color,
                     life_time=6.0,
                 )
+
+            # Draw diagonal hatching inside the polygon
+            hatches = self._compute_hatching(carla_points, spacing=2.0)
+            for h_start, h_end in hatches:
+                self._world.debug.draw_line(
+                    h_start, h_end,
+                    thickness=0.08,
+                    color=hatch_color,
+                    life_time=6.0,
+                )
+
             drawn += 1
 
         return {"type": "v2x_zones_synced", "drawn": drawn}
+
+    @staticmethod
+    def _compute_hatching(carla_points, spacing=2.0):
+        """Generate diagonal hatching line segments inside a polygon.
+
+        Uses a scanline approach: sweeps 45-degree lines across the
+        polygon bounding box and clips them to the polygon boundary.
+        """
+        import carla
+
+        if len(carla_points) < 3:
+            return []
+
+        xs = [p.x for p in carla_points]
+        ys = [p.y for p in carla_points]
+        avg_z = sum(p.z for p in carla_points) / len(carla_points)
+
+        # Diagonal scanline: y = x + c
+        # Range of c: (min_y - max_x) to (max_y - min_x)
+        c_min = min(ys) - max(xs)
+        c_max = max(ys) - min(xs)
+
+        # Build edge list as (x1,y1,x2,y2) for intersection tests
+        n = len(carla_points)
+        edges = []
+        for i in range(n):
+            p1 = carla_points[i]
+            p2 = carla_points[(i + 1) % n]
+            edges.append((p1.x, p1.y, p2.x, p2.y))
+
+        segments = []
+        step = spacing * 1.414  # diagonal spacing
+        c = c_min + step
+        while c < c_max:
+            # Find intersections of y = x + c with each edge
+            intersections = []
+            for x1, y1, x2, y2 in edges:
+                dx = x2 - x1
+                dy = y2 - y1
+                # Parametric: P = (x1,y1) + t*(dx,dy)
+                # Scanline: y = x + c => y1 + t*dy = x1 + t*dx + c
+                denom = dy - dx
+                if abs(denom) < 1e-10:
+                    continue
+                t = (x1 - y1 + c) / denom
+                if t < 0.0 or t > 1.0:
+                    continue
+                ix = x1 + t * dx
+                intersections.append(ix)
+
+            # Sort and pair up (entry/exit)
+            intersections.sort()
+            for i in range(0, len(intersections) - 1, 2):
+                sx = intersections[i]
+                ex = intersections[i + 1]
+                segments.append((
+                    carla.Location(x=sx, y=sx + c, z=avg_z),
+                    carla.Location(x=ex, y=ex + c, z=avg_z),
+                ))
+            c += step
+
+        return segments
 
     def switch_camera(self, view: str) -> None:
         """Switch the active camera view."""
