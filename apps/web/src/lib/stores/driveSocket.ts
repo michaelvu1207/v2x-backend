@@ -302,3 +302,10 @@ export function requestV2xSignals(): void {
 export function dismissV2xAlert(alertId: number): void {
 	v2xAlerts.update(list => list.filter(a => a.id !== alertId));
 }
+
+// ── V2X Zone Actions ──
+
+export function syncV2xZones(zones: { polygon: [number, number][]; signal_type: string; color: string }[]): void {
+	send({ type: 'sync_v2x_zones', zones });
+}
+

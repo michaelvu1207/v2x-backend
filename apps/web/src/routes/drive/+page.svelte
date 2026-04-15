@@ -56,6 +56,7 @@
 	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
 	import { checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
 	import { v2xZones } from '$lib/stores/v2xZones';
+	import { syncV2xZones } from '$lib/stores/driveSocket';
 	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
 
 	type InputMode = 'wheel' | 'keyboard';
@@ -189,6 +190,27 @@
 			t.pos[0], t.pos[1],
 			mapData.geo_ref.origin_lat, mapData.geo_ref.origin_lon
 		);
+	});
+
+	// Sync V2X zones to bridge for 3D outline rendering (redraw every 5s)
+	let zoneSyncInterval: ReturnType<typeof setInterval> | null = null;
+	$effect(() => {
+		if ($sessionState === 'driving' && $v2xZones.length > 0) {
+			const zones = $v2xZones.map(z => ({
+				polygon: z.polygon,
+				signal_type: z.signal_type,
+				color: z.color,
+			}));
+			syncV2xZones(zones);
+			if (!zoneSyncInterval) {
+				zoneSyncInterval = setInterval(() => syncV2xZones(zones), 5000);
+			}
+		} else {
+			if (zoneSyncInterval) {
+				clearInterval(zoneSyncInterval);
+				zoneSyncInterval = null;
+			}
+		}
 	});
 
 	function handleEndSession() {

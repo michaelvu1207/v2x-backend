@@ -536,6 +536,61 @@ class DriveSession:
             "placed_count": len(self._placed_objects),
         }
 
+    def sync_v2x_zones(self, zones: list[dict]) -> dict:
+        """Draw V2X zone outlines on the CARLA ground using debug lines.
+
+        Each zone is a dict with 'polygon' (list of [lon, lat] pairs),
+        'signal_type', and 'color'. Lines are drawn at ground level
+        with a 6s lifetime (redrawn periodically by the frontend).
+        """
+        if not self._active:
+            raise RuntimeError("No active session")
+
+        import carla
+        from digital_twin_bridge.geo_utils import gps_to_carla
+
+        COLORS = {
+            "warning": carla.Color(255, 60, 60, 255),
+            "alert": carla.Color(255, 150, 50, 255),
+            "info": carla.Color(60, 130, 255, 255),
+        }
+
+        drawn = 0
+        for zone in zones:
+            polygon = zone.get("polygon", [])
+            if len(polygon) < 3:
+                continue
+
+            color = COLORS.get(zone.get("signal_type", "warning"), COLORS["warning"])
+
+            # Convert GPS polygon vertices to CARLA locations at ground level
+            carla_points = []
+            for lon, lat in polygon:
+                try:
+                    loc = gps_to_carla(self._map, lat, lon)
+                    # Lift slightly above ground to avoid z-fighting
+                    loc.z += 0.15
+                    carla_points.append(loc)
+                except Exception:
+                    continue
+
+            if len(carla_points) < 3:
+                continue
+
+            # Draw outline: connect consecutive vertices
+            for i in range(len(carla_points)):
+                start = carla_points[i]
+                end = carla_points[(i + 1) % len(carla_points)]
+                self._world.debug.draw_line(
+                    start, end,
+                    thickness=0.15,
+                    color=color,
+                    life_time=6.0,
+                )
+            drawn += 1
+
+        return {"type": "v2x_zones_synced", "drawn": drawn}
+
     def switch_camera(self, view: str) -> None:
         """Switch the active camera view."""
         if view not in VALID_CAMERA_VIEWS:
@@ -649,6 +704,8 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
         elif msg_type == "camera_switch":
             session.switch_camera(msg["view"])
             return {"type": "camera_switched", "view": msg["view"]}
+        elif msg_type == "sync_v2x_zones":
+            return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":
             return session.respawn()
         elif msg_type == "end_session":
