@@ -222,6 +222,10 @@ class DriveSession:
         self._frame_lock = threading.Lock()
         self._accepting_frames = False  # Guard against callbacks after stop
         self._placed_objects: list = []  # User-placed objects (actor, blueprint_id, pos)
+        # Camera stream config — survives set_camera_settings respawns.
+        self._camera_width = 960
+        self._camera_height = 540
+        self._camera_fov = 90.0
 
     async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
@@ -296,9 +300,9 @@ class DriveSession:
                 return
 
             # Set camera resolution — lower for streaming performance
-            camera_bp.set_attribute("image_size_x", "960")
-            camera_bp.set_attribute("image_size_y", "540")
-            camera_bp.set_attribute("fov", "90")
+            camera_bp.set_attribute("image_size_x", str(self._camera_width))
+            camera_bp.set_attribute("image_size_y", str(self._camera_height))
+            camera_bp.set_attribute("fov", str(self._camera_fov))
             camera_bp.set_attribute("sensor_tick", "0.05")  # 20 FPS
 
             # Initial transform: chase camera
@@ -311,7 +315,7 @@ class DriveSession:
                 camera_bp, cam_transform, attach_to=self.vehicle
             )
             self._camera_sensor.listen(self._on_camera_frame)
-            logger.info("Camera sensor attached (960x540 @ 20fps)")
+            logger.info("Camera sensor attached (%dx%d @ 20fps)", self._camera_width, self._camera_height)
         except ImportError:
             logger.info("CARLA not available — camera sensor skipped (mock mode)")
         except Exception as e:
@@ -606,16 +610,35 @@ class DriveSession:
         except Exception:
             pass
 
+        # Pull resolution / fov into persistent instance attrs so that later
+        # post-processing edits don't revert the user's aspect ratio.
+        if "image_size_x" in params:
+            try:
+                self._camera_width = max(64, int(float(params.pop("image_size_x"))))
+            except (TypeError, ValueError):
+                params.pop("image_size_x", None)
+        if "image_size_y" in params:
+            try:
+                self._camera_height = max(64, int(float(params.pop("image_size_y"))))
+            except (TypeError, ValueError):
+                params.pop("image_size_y", None)
+        if "fov" in params:
+            try:
+                self._camera_fov = float(params.pop("fov"))
+            except (TypeError, ValueError):
+                params.pop("fov", None)
+
         # Respawn with new attributes
         bp_lib = self._world.get_blueprint_library()
         camera_bp = bp_lib.find("sensor.camera.rgb")
 
-        # Base attributes
-        camera_bp.set_attribute("image_size_x", "960")
-        camera_bp.set_attribute("image_size_y", "540")
+        # Base attributes (use instance state so aspect ratio persists)
+        camera_bp.set_attribute("image_size_x", str(self._camera_width))
+        camera_bp.set_attribute("image_size_y", str(self._camera_height))
+        camera_bp.set_attribute("fov", str(self._camera_fov))
         camera_bp.set_attribute("sensor_tick", "0.05")
 
-        # Apply all provided settings
+        # Apply remaining post-processing settings
         for key, value in params.items():
             try:
                 camera_bp.set_attribute(key, str(value))
@@ -628,8 +651,16 @@ class DriveSession:
         self._camera_sensor.listen(self._on_camera_frame)
         self._accepting_frames = True
 
-        logger.info("Camera settings updated: %d attributes applied", len(params))
-        return {"type": "camera_settings_set"}
+        logger.info(
+            "Camera settings updated: %dx%d fov=%.1f, %d extra attrs",
+            self._camera_width, self._camera_height, self._camera_fov, len(params),
+        )
+        return {
+            "type": "camera_settings_set",
+            "width": self._camera_width,
+            "height": self._camera_height,
+            "fov": self._camera_fov,
+        }
 
     def spawn_traffic(self, preset: str = "medium") -> dict:
         """Spawn autonomous NPC vehicles using CARLA's Traffic Manager.
