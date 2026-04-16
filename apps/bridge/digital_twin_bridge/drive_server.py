@@ -29,17 +29,18 @@ VALID_CAMERA_VIEWS = {"chase", "hood", "bird", "free"}
 # Default vehicle if none specified
 DEFAULT_VEHICLE = "vehicle.tesla.model3"
 
-# Traffic presets (vehicles, speed_diff_pct, distance_m, ignore_lights_pct, ignore_signs_pct)
+# Traffic presets
 TRAFFIC_PRESETS = {
-    "none":   {"vehicles": 0,   "speed_diff": 0,   "distance": 2.0, "ignore_lights": 0,  "ignore_signs": 0},
-    "light":  {"vehicles": 20,  "speed_diff": 30,  "distance": 3.0, "ignore_lights": 0,  "ignore_signs": 0},
-    "medium": {"vehicles": 60,  "speed_diff": 10,  "distance": 2.0, "ignore_lights": 5,  "ignore_signs": 2},
-    "heavy":  {"vehicles": 120, "speed_diff": 0,   "distance": 1.5, "ignore_lights": 15, "ignore_signs": 10},
-    "chaos":  {"vehicles": 180, "speed_diff": -20, "distance": 1.0, "ignore_lights": 35, "ignore_signs": 30},
+    "none":   {"vehicles": 0,   "walkers": 0,  "speed_diff": 0,   "distance": 2.0, "ignore_lights": 0,  "ignore_signs": 0},
+    "light":  {"vehicles": 20,  "walkers": 10, "speed_diff": 30,  "distance": 3.0, "ignore_lights": 0,  "ignore_signs": 0},
+    "medium": {"vehicles": 60,  "walkers": 25, "speed_diff": 10,  "distance": 2.0, "ignore_lights": 5,  "ignore_signs": 2},
+    "heavy":  {"vehicles": 120, "walkers": 50, "speed_diff": 0,   "distance": 1.5, "ignore_lights": 15, "ignore_signs": 10},
+    "chaos":  {"vehicles": 180, "walkers": 80, "speed_diff": -20, "distance": 1.0, "ignore_lights": 35, "ignore_signs": 30},
 }
 
 # Module-level traffic tracking so periodic_actor_audit can exclude them
 _traffic_actor_ids: set[int] = set()
+_walker_controller_ids: set[int] = set()  # controllers attached to walkers (destroy order matters)
 
 
 def get_available_vehicles(world) -> list[dict]:
@@ -668,20 +669,108 @@ class DriveSession:
             _traffic_actor_ids.add(actor.id)
             spawned += 1
 
-        logger.info("Spawned %d traffic vehicles (preset=%s)", spawned, preset)
-        return {"type": "traffic_spawned", "preset": preset, "count": spawned}
+        # ── Spawn pedestrians (walkers + AI controllers) ──
+        walkers_spawned = self._spawn_walkers(config["walkers"])
+
+        logger.info("Spawned %d vehicles + %d walkers (preset=%s)", spawned, walkers_spawned, preset)
+        return {"type": "traffic_spawned", "preset": preset, "vehicles": spawned, "walkers": walkers_spawned, "count": spawned + walkers_spawned}
+
+    def _spawn_walkers(self, count: int) -> int:
+        """Spawn CARLA pedestrians with AI controllers.
+
+        Walker lifecycle: spawn walker -> spawn attached controller ->
+        start() -> go_to_location(random_nav_point) + set_max_speed.
+        """
+        if count <= 0:
+            return 0
+
+        import carla
+        import random
+
+        bp_lib = self._world.get_blueprint_library()
+        walker_bps = list(bp_lib.filter("walker.pedestrian.*"))
+        controller_bp = bp_lib.find("controller.ai.walker")
+
+        if not walker_bps or controller_bp is None:
+            logger.warning("Walker blueprints not available in this CARLA build")
+            return 0
+
+        # Step 1: find valid nav-mesh spawn locations
+        spawn_points = []
+        for _ in range(count * 3):  # overspawn candidates for spawn failures
+            loc = self._world.get_random_location_from_navigation()
+            if loc is not None:
+                sp = carla.Transform(loc)
+                spawn_points.append(sp)
+            if len(spawn_points) >= count:
+                break
+
+        if not spawn_points:
+            logger.warning("No navigation spawn points available — walkers skipped")
+            return 0
+
+        # Step 2: spawn walkers
+        walkers = []
+        for sp in spawn_points[:count]:
+            bp = random.choice(walker_bps)
+            if bp.has_attribute("is_invincible"):
+                bp.set_attribute("is_invincible", "false")
+            actor = self._world.try_spawn_actor(bp, sp)
+            if actor is not None:
+                walkers.append(actor)
+                _traffic_actor_ids.add(actor.id)
+
+        # Step 3: spawn controllers attached to walkers
+        controllers = []
+        for walker in walkers:
+            controller = self._world.try_spawn_actor(
+                controller_bp, carla.Transform(), attach_to=walker
+            )
+            if controller is not None:
+                controllers.append(controller)
+                _walker_controller_ids.add(controller.id)
+
+        # Tick so actors are registered before we start controllers
+        self._world.tick()
+
+        # Step 4: start each controller and give it a destination
+        for controller in controllers:
+            try:
+                controller.start()
+                controller.go_to_location(self._world.get_random_location_from_navigation())
+                controller.set_max_speed(1.0 + random.random() * 0.8)  # 1.0–1.8 m/s
+            except Exception as e:
+                logger.debug("Walker controller start failed: %s", e)
+
+        return len(walkers)
 
     def despawn_traffic(self) -> dict:
-        """Remove all traffic vehicles spawned by spawn_traffic."""
+        """Remove all traffic vehicles and pedestrians spawned by spawn_traffic."""
         if not self._active:
             raise RuntimeError("No active session")
 
+        # Stop and destroy walker AI controllers first (must go before walkers)
+        for ctrl_id in list(_walker_controller_ids):
+            ctrl = self._world.get_actor(ctrl_id)
+            if ctrl is not None:
+                try:
+                    ctrl.stop()
+                except Exception:
+                    pass
+                try:
+                    ctrl.destroy()
+                except Exception:
+                    pass
+            _walker_controller_ids.discard(ctrl_id)
+
+        # Destroy vehicles + walkers
         destroyed = 0
         for actor_id in list(_traffic_actor_ids):
             actor = self._world.get_actor(actor_id)
             if actor is not None:
                 try:
-                    actor.set_autopilot(False)
+                    if "vehicle" in actor.type_id:
+                        actor.set_autopilot(False)
                 except Exception:
                     pass
                 try:
@@ -691,7 +780,7 @@ class DriveSession:
                     logger.debug("Failed to destroy traffic %d: %s", actor_id, e)
             _traffic_actor_ids.discard(actor_id)
 
-        logger.info("Despawned %d traffic vehicles", destroyed)
+        logger.info("Despawned %d traffic actors", destroyed)
         return {"type": "traffic_despawned", "count": destroyed}
 
     def get_nearby_actors(self, radius: float = 250.0) -> list[dict]:
@@ -705,6 +794,7 @@ class DriveSession:
         player_loc = self.vehicle.get_transform().location
         actors = []
 
+        # Vehicles
         for a in self._world.get_actors().filter("vehicle.*"):
             if a.id == self.vehicle.id:
                 continue
@@ -718,6 +808,20 @@ class DriveSession:
                 "pos": [round(t.location.x, 2), round(t.location.y, 2)],
                 "yaw": round(t.rotation.yaw, 1),
                 "type": "traffic" if a.id in _traffic_actor_ids else "other",
+            })
+
+        # Walkers (pedestrians)
+        for a in self._world.get_actors().filter("walker.pedestrian.*"):
+            t = a.get_transform()
+            dx = t.location.x - player_loc.x
+            dy = t.location.y - player_loc.y
+            if dx * dx + dy * dy > radius * radius:
+                continue
+            actors.append({
+                "id": a.id,
+                "pos": [round(t.location.x, 2), round(t.location.y, 2)],
+                "yaw": round(t.rotation.yaw, 1),
+                "type": "pedestrian",
             })
 
         return actors

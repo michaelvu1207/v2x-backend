@@ -79,7 +79,7 @@ export interface NearbyActor {
 	id: number;
 	pos: [number, number];
 	yaw: number;
-	type: 'traffic' | 'other';
+	type: 'traffic' | 'pedestrian' | 'other';
 }
 
 export interface VehicleTelemetry {
