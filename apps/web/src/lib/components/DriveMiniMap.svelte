@@ -11,9 +11,10 @@
 		roadLines: number[][][];
 		originLat: number;
 		originLon: number;
+		fullPanel?: boolean;
 	}
 
-	let { roadLines, originLat, originLon }: Props = $props();
+	let { roadLines, originLat, originLon, fullPanel = false }: Props = $props();
 
 	let mapContainer: HTMLDivElement;
 	let map: maplibregl.Map | null = null;
@@ -26,15 +27,19 @@
 			container: mapContainer,
 			style: MAP_STYLE_URL,
 			center: [originLon || MAP_CENTER.lon, originLat || MAP_CENTER.lat],
-			zoom: DEFAULT_ZOOM + 1,
+			zoom: fullPanel ? DEFAULT_ZOOM : DEFAULT_ZOOM + 1,
 			attributionControl: false,
-			dragPan: false,
+			dragPan: fullPanel,
 			dragRotate: false,
 			keyboard: false,
-			doubleClickZoom: false,
-			touchZoomRotate: false,
+			doubleClickZoom: fullPanel,
+			touchZoomRotate: fullPanel,
 			scrollZoom: true,
 		});
+
+		if (fullPanel) {
+			map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+		}
 
 		map.on('load', () => {
 			if (!map) return;
@@ -168,9 +173,11 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="absolute left-3 top-3 z-30 overflow-hidden rounded-lg border border-gray-700/60 bg-gray-900/80 shadow-xl backdrop-blur-sm transition-all duration-200"
-	style="width: {expanded ? 400 : 220}px; height: {expanded ? 300 : 160}px;"
-	onclick={() => { expanded = !expanded; setTimeout(() => map?.resize(), 210); }}
+	class={fullPanel
+		? 'relative h-full w-full'
+		: 'absolute left-3 top-3 z-30 overflow-hidden rounded-lg border border-gray-700/60 bg-gray-900/80 shadow-xl backdrop-blur-sm transition-all duration-200'}
+	style={fullPanel ? '' : `width: ${expanded ? 400 : 220}px; height: ${expanded ? 300 : 160}px;`}
+	onclick={() => { if (!fullPanel) { expanded = !expanded; setTimeout(() => map?.resize(), 210); } }}
 >
 	<div bind:this={mapContainer} class="h-full w-full"></div>
 

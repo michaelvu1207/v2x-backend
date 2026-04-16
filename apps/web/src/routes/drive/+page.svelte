@@ -510,84 +510,83 @@
 		</div>
 
 	{:else if state === 'driving'}
-		<!-- Full-screen camera — no header, everything overlays -->
-		<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
-		<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+		<!-- Tesla-style split layout: camera left, map right -->
+		<div class="flex h-full w-full">
+			<!-- Left: Camera feed + HUD -->
+			<div class="relative flex-1 min-w-0">
+				<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
+				<HudOverlay telemetry={currentTelemetry} isRecording={true} />
 
-		<!-- V2X toast notifications -->
-		<V2xToast />
+				<!-- V2X toast notifications -->
+				<V2xToast />
 
-		<!-- Mini-map with car position and V2X zones -->
-		{#if mapData}
-			<DriveMiniMap
-				roadLines={mapData.road_network}
-				originLat={mapData.geo_ref.origin_lat}
-				originLon={mapData.geo_ref.origin_lon}
-			/>
-		{/if}
+				<!-- Camera + controls overlay on the video -->
+				<div class="absolute top-2 right-2 z-20 flex flex-wrap gap-1 pointer-events-auto">
+					{#each [{ id: 'chase', label: 'Chase' }, { id: 'hood', label: 'Hood' }, { id: 'bird', label: 'Bird' }, { id: 'free', label: 'Free' }] as view}
+						<button onclick={() => handleCameraSwitch(view.id as CameraView)}
+							class="px-2 py-1 rounded text-[10px] font-medium transition-colors {activeCamera === view.id
+								? 'bg-white/25 text-white'
+								: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
+							{view.label}
+						</button>
+					{/each}
+				</div>
 
-		<!-- All buttons overlay on the video -->
-		<div class="absolute top-2 right-2 z-20 flex gap-1.5 pointer-events-auto">
-			{#each [{ id: 'chase', label: 'Chase' }, { id: 'hood', label: 'Hood' }, { id: 'bird', label: 'Bird' }, { id: 'free', label: 'Free' }] as view}
-				<button onclick={() => handleCameraSwitch(view.id as CameraView)}
-					class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors {activeCamera === view.id
-						? 'bg-white/25 text-white'
-						: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
-					{view.label}
-				</button>
-			{/each}
-			<button onclick={() => { showWeatherPanel = !showWeatherPanel; }}
-				class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors {showWeatherPanel
-					? 'bg-cyan-600 text-white'
-					: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
-				Weather
-			</button>
-			<button onclick={() => respawnVehicle()}
-				class="px-2.5 py-1.5 bg-blue-600/70 hover:bg-blue-600 rounded-lg text-xs font-medium text-white transition-colors">
-				Respawn
-			</button>
-			<button onclick={handleEndSession}
-				class="px-2.5 py-1.5 bg-red-600/70 hover:bg-red-600 rounded-lg text-xs font-medium text-white transition-colors">
-				End
-			</button>
+				<!-- Top left info badges -->
+				<div class="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-auto">
+					<span class="px-1.5 py-0.5 bg-black/50 rounded text-[10px] text-gray-300">
+						{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
+					</span>
+					{#if inputMode === 'wheel' && gamepad}
+						<button onclick={() => showCalibration = true}
+							class="px-1.5 py-0.5 bg-black/50 hover:bg-black/70 rounded text-[10px] text-gray-400 hover:text-white transition-colors">
+							Cal
+						</button>
+					{/if}
+					<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
+				</div>
+
+				<!-- Bottom left action buttons -->
+				<div class="absolute bottom-2 left-2 z-20 flex gap-1 pointer-events-auto">
+					<button onclick={() => { showWeatherPanel = !showWeatherPanel; }}
+						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showWeatherPanel
+							? 'bg-cyan-600 text-white'
+							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						Weather
+					</button>
+					<button onclick={() => respawnVehicle()}
+						class="px-2 py-1 bg-blue-600/70 hover:bg-blue-600 rounded text-[10px] font-medium text-white transition-colors">
+						Respawn
+					</button>
+					<button onclick={handleEndSession}
+						class="px-2 py-1 bg-red-600/70 hover:bg-red-600 rounded text-[10px] font-medium text-white transition-colors">
+						End
+					</button>
+				</div>
+
+				<!-- V2X Signal Placer Panel -->
+				{#if showV2xPlacer}
+					<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />
+				{/if}
+
+				<!-- Weather Settings Panel -->
+				{#if showWeatherPanel}
+					<WeatherPanel onClose={() => { showWeatherPanel = false; }} />
+				{/if}
+			</div>
+
+			<!-- Right: Full map panel -->
+			{#if mapData}
+				<div class="w-[35%] min-w-[300px] max-w-[500px] border-l border-gray-800 bg-gray-950">
+					<DriveMiniMap
+						roadLines={mapData.road_network}
+						originLat={mapData.geo_ref.origin_lat}
+						originLon={mapData.geo_ref.origin_lon}
+						fullPanel={true}
+					/>
+				</div>
+			{/if}
 		</div>
-
-		<!-- Input mode + tunnel + connection — top left, subtle -->
-		<div class="absolute top-2 left-2 z-20 flex items-center gap-2 pointer-events-auto">
-			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
-				{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
-			</span>
-			{#if inputMode === 'wheel' && gamepad}
-				<button onclick={() => showCalibration = true}
-					class="px-2 py-1 bg-black/50 hover:bg-black/70 rounded text-[10px] text-gray-400 hover:text-white transition-colors">
-					Calibrate
-				</button>
-			{/if}
-			<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-gray-300">
-				{DRIVE_TUNNELS.find(t => t.id === selectedTunnel)?.label}
-			</span>
-			<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
-			{#if numPlaced > 0}
-				<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-yellow-300">
-					{numPlaced} placed
-				</span>
-			{/if}
-			{#if numV2xSignals > 0}
-				<span class="px-2 py-1 bg-black/50 rounded text-[10px] text-cyan-300">
-					{numV2xSignals} signals
-				</span>
-			{/if}
-		</div>
-
-		<!-- V2X Signal Placer Panel -->
-		{#if showV2xPlacer}
-			<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />
-		{/if}
-
-		<!-- Weather Settings Panel -->
-		{#if showWeatherPanel}
-			<WeatherPanel onClose={() => { showWeatherPanel = false; }} />
-		{/if}
 
 		<!-- Object Placer Panel — slide-in from bottom-left -->
 		{#if showObjectPlacer}
