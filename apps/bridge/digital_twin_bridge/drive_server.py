@@ -536,6 +536,59 @@ class DriveSession:
             "placed_count": len(self._placed_objects),
         }
 
+    def set_camera_settings(self, params: dict) -> dict:
+        """Update camera sensor post-processing attributes at runtime.
+
+        Destroys the current camera sensor and respawns it with the new
+        attributes, since CARLA does not support changing blueprint
+        attributes after spawn.
+        """
+        if not self._active or self._camera_sensor is None:
+            raise RuntimeError("No active session or camera")
+
+        import carla
+
+        # Stop accepting frames during swap
+        self._accepting_frames = False
+
+        # Save current transform
+        current_transform = self._camera_sensor.get_transform()
+
+        # Stop and destroy old sensor
+        try:
+            self._camera_sensor.stop()
+        except Exception:
+            pass
+        try:
+            self._camera_sensor.destroy()
+        except Exception:
+            pass
+
+        # Respawn with new attributes
+        bp_lib = self._world.get_blueprint_library()
+        camera_bp = bp_lib.find("sensor.camera.rgb")
+
+        # Base attributes
+        camera_bp.set_attribute("image_size_x", "960")
+        camera_bp.set_attribute("image_size_y", "540")
+        camera_bp.set_attribute("sensor_tick", "0.05")
+
+        # Apply all provided settings
+        for key, value in params.items():
+            try:
+                camera_bp.set_attribute(key, str(value))
+            except Exception as e:
+                logger.debug("Camera attribute '%s' failed: %s", key, e)
+
+        self._camera_sensor = self._world.spawn_actor(
+            camera_bp, current_transform, attach_to=self.vehicle
+        )
+        self._camera_sensor.listen(self._on_camera_frame)
+        self._accepting_frames = True
+
+        logger.info("Camera settings updated: %d attributes applied", len(params))
+        return {"type": "camera_settings_set"}
+
     def set_weather(self, params: dict) -> dict:
         """Apply weather parameters to the CARLA world."""
         if not self._active:
@@ -814,6 +867,8 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return {"type": "camera_switched", "view": msg["view"]}
         elif msg_type == "set_weather":
             return session.set_weather(msg.get("params", {}))
+        elif msg_type == "set_camera_settings":
+            return session.set_camera_settings(msg.get("params", {}))
         elif msg_type == "sync_v2x_zones":
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":
