@@ -97,7 +97,7 @@
 			el.style.width = '24px';
 			el.style.height = '24px';
 
-			carMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' })
+			carMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'viewport' })
 				.setLngLat([originLon || MAP_CENTER.lon, originLat || MAP_CENTER.lat])
 				.addTo(map);
 		});
@@ -115,12 +115,13 @@
 
 		const [lon, lat] = carlaToGps(t.pos[0], t.pos[1], originLat, originLon);
 		carMarker.setLngLat([lon, lat]);
-		// CARLA yaw 0 = +X = East (lon+), yaw 90 = +Y = South (lat-).
-		// MapLibre rotation 0 = North, 90 = East.
-		// So: mapBearing = carlaYaw + 90
-		const bearing = t.rot[1] + 90;
-		carMarker.setRotation(0); // Arrow always points up; map rotates instead
-		map.jumpTo({ center: [lon, lat], bearing: -bearing });
+		// Google/Apple Maps nav style: arrow always points UP (direction of travel),
+		// map rotates underneath so "up" = forward.
+		// MapLibre bearing = clockwise from north. We set bearing to the car's
+		// heading so north rotates and the car's forward is always screen-up.
+		const heading = t.rot[1] + 90; // CARLA yaw to map bearing
+		carMarker.setRotation(0);
+		map.jumpTo({ center: [lon, lat], bearing: heading });
 	});
 
 	// Update zone overlays when zones change
