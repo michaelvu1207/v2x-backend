@@ -39,7 +39,7 @@ export const DRIVE_TUNNELS = [
 	{
 		id: 'cloudflare',
 		label: 'Cloudflare',
-		url: 'wss://fall-showing-mats-hunting.trycloudflare.com',
+		url: 'wss://monster-area-neon-road.trycloudflare.com',
 	},
 ] as const;
 
