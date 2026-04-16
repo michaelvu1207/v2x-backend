@@ -118,8 +118,9 @@
 		// CARLA yaw 0 = +X = East (lon+), yaw 90 = +Y = South (lat-).
 		// MapLibre rotation 0 = North, 90 = East.
 		// So: mapBearing = carlaYaw + 90
-		carMarker.setRotation(t.rot[1] + 90);
-		map.setCenter([lon, lat]);
+		const bearing = t.rot[1] + 90;
+		carMarker.setRotation(0); // Arrow always points up; map rotates instead
+		map.jumpTo({ center: [lon, lat], bearing: -bearing });
 	});
 
 	// Update zone overlays when zones change
