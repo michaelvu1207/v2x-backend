@@ -88,6 +88,28 @@
 				},
 			});
 
+			// Nearby actors layer (traffic vehicles + other actors)
+			map.addSource('nearby-actors', {
+				type: 'geojson',
+				data: { type: 'FeatureCollection', features: [] },
+			});
+			map.addLayer({
+				id: 'nearby-actors-layer',
+				type: 'circle',
+				source: 'nearby-actors',
+				paint: {
+					'circle-radius': 4,
+					'circle-color': [
+						'match', ['get', 'type'],
+						'traffic', '#f59e0b',  // amber for NPC traffic
+						'#94a3b8',             // gray for "other"
+					],
+					'circle-stroke-width': 1,
+					'circle-stroke-color': '#1f2937',
+					'circle-opacity': 0.85,
+				},
+			});
+
 			// Car marker — directional arrow that rotates with heading
 			const el = document.createElement('div');
 			el.className = 'car-marker';
@@ -102,6 +124,20 @@
 				.addTo(map);
 		});
 	});
+
+	function buildActorsGeoJSON(actors: { id: number; pos: [number, number]; type: string }[]): GeoJSON.FeatureCollection {
+		return {
+			type: 'FeatureCollection',
+			features: actors.map((a) => {
+				const [lon, lat] = carlaToGps(a.pos[0], a.pos[1], originLat, originLon);
+				return {
+					type: 'Feature' as const,
+					geometry: { type: 'Point' as const, coordinates: [lon, lat] },
+					properties: { id: a.id, type: a.type },
+				};
+			}),
+		};
+	}
 
 	// Update car position from telemetry
 	let frameCount = 0;
@@ -122,6 +158,12 @@
 		const heading = t.rot[1] + 90; // CARLA yaw to map bearing
 		carMarker.setRotation(0);
 		map.jumpTo({ center: [lon, lat], bearing: heading });
+
+		// Update nearby actors
+		const actorsSource = map.getSource('nearby-actors') as maplibregl.GeoJSONSource | undefined;
+		if (actorsSource && t.nearby_actors) {
+			actorsSource.setData(buildActorsGeoJSON(t.nearby_actors));
+		}
 	});
 
 	// Update zone overlays when zones change

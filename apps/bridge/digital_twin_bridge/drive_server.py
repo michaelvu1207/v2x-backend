@@ -29,6 +29,18 @@ VALID_CAMERA_VIEWS = {"chase", "hood", "bird", "free"}
 # Default vehicle if none specified
 DEFAULT_VEHICLE = "vehicle.tesla.model3"
 
+# Traffic presets (vehicles, speed_diff_pct, distance_m, ignore_lights_pct, ignore_signs_pct)
+TRAFFIC_PRESETS = {
+    "none":   {"vehicles": 0,   "speed_diff": 0,   "distance": 2.0, "ignore_lights": 0,  "ignore_signs": 0},
+    "light":  {"vehicles": 20,  "speed_diff": 30,  "distance": 3.0, "ignore_lights": 0,  "ignore_signs": 0},
+    "medium": {"vehicles": 60,  "speed_diff": 10,  "distance": 2.0, "ignore_lights": 5,  "ignore_signs": 2},
+    "heavy":  {"vehicles": 120, "speed_diff": 0,   "distance": 1.5, "ignore_lights": 15, "ignore_signs": 10},
+    "chaos":  {"vehicles": 180, "speed_diff": -20, "distance": 1.0, "ignore_lights": 35, "ignore_signs": 30},
+}
+
+# Module-level traffic tracking so periodic_actor_audit can exclude them
+_traffic_actor_ids: set[int] = set()
+
 
 def get_available_vehicles(world) -> list[dict]:
     """Query CARLA for all spawnable vehicle blueprints."""
@@ -355,6 +367,7 @@ class DriveSession:
             "steer": round(steer, 3),
             "throttle": round(throttle, 3),
             "brake": round(brake, 3),
+            "nearby_actors": self.get_nearby_actors(),
         }
 
     def _update_camera_transform(self):
@@ -589,6 +602,126 @@ class DriveSession:
         logger.info("Camera settings updated: %d attributes applied", len(params))
         return {"type": "camera_settings_set"}
 
+    def spawn_traffic(self, preset: str = "medium") -> dict:
+        """Spawn autonomous NPC vehicles using CARLA's Traffic Manager.
+
+        Replaces any existing traffic. Uses preset config for count + behavior.
+        """
+        if not self._active:
+            raise RuntimeError("No active session")
+
+        import carla
+        import random
+
+        # Clean up existing traffic first
+        self.despawn_traffic()
+
+        config = TRAFFIC_PRESETS.get(preset, TRAFFIC_PRESETS["medium"])
+        target_count = config["vehicles"]
+
+        if target_count == 0:
+            return {"type": "traffic_spawned", "preset": preset, "count": 0}
+
+        client = carla.Client(
+            self._world.get_settings().synchronous_mode and "localhost" or "localhost",
+            2000,
+        )
+        client.set_timeout(10.0)
+        tm = client.get_trafficmanager()
+        tm_port = tm.get_port()
+
+        tm.global_percentage_speed_difference(config["speed_diff"])
+        tm.set_global_distance_to_leading_vehicle(config["distance"])
+        tm.set_synchronous_mode(True)
+
+        bp_lib = self._world.get_blueprint_library()
+        vehicle_bps = [bp for bp in bp_lib.filter("vehicle.*")
+                       if int(bp.get_attribute("number_of_wheels")) == 4]
+
+        spawn_points = self._map.get_spawn_points()
+        random.shuffle(spawn_points)
+
+        # Don't spawn at the player's spawn point
+        available_spawns = spawn_points[: min(len(spawn_points), target_count)]
+
+        spawned = 0
+        for sp in available_spawns:
+            bp = random.choice(vehicle_bps)
+            if bp.has_attribute("color"):
+                colors = bp.get_attribute("color").recommended_values
+                if colors:
+                    bp.set_attribute("color", random.choice(colors))
+            bp.set_attribute("role_name", "autopilot")
+
+            actor = self._world.try_spawn_actor(bp, sp)
+            if actor is None:
+                continue
+
+            actor.set_autopilot(True, tm_port)
+
+            # Per-vehicle aggression
+            if config["ignore_lights"] > 0:
+                tm.ignore_lights_percentage(actor, float(config["ignore_lights"]))
+            if config["ignore_signs"] > 0:
+                tm.ignore_signs_percentage(actor, float(config["ignore_signs"]))
+
+            _traffic_actor_ids.add(actor.id)
+            spawned += 1
+
+        logger.info("Spawned %d traffic vehicles (preset=%s)", spawned, preset)
+        return {"type": "traffic_spawned", "preset": preset, "count": spawned}
+
+    def despawn_traffic(self) -> dict:
+        """Remove all traffic vehicles spawned by spawn_traffic."""
+        if not self._active:
+            raise RuntimeError("No active session")
+
+        destroyed = 0
+        for actor_id in list(_traffic_actor_ids):
+            actor = self._world.get_actor(actor_id)
+            if actor is not None:
+                try:
+                    actor.set_autopilot(False)
+                except Exception:
+                    pass
+                try:
+                    actor.destroy()
+                    destroyed += 1
+                except Exception as e:
+                    logger.debug("Failed to destroy traffic %d: %s", actor_id, e)
+            _traffic_actor_ids.discard(actor_id)
+
+        logger.info("Despawned %d traffic vehicles", destroyed)
+        return {"type": "traffic_despawned", "count": destroyed}
+
+    def get_nearby_actors(self, radius: float = 250.0) -> list[dict]:
+        """Return all vehicles within radius meters of the player vehicle.
+
+        Used to enrich telemetry with actors for the mini-map display.
+        """
+        if self.vehicle is None:
+            return []
+
+        player_loc = self.vehicle.get_transform().location
+        actors = []
+
+        for a in self._world.get_actors().filter("vehicle.*"):
+            if a.id == self.vehicle.id:
+                continue
+            t = a.get_transform()
+            dx = t.location.x - player_loc.x
+            dy = t.location.y - player_loc.y
+            if dx * dx + dy * dy > radius * radius:
+                continue
+            actors.append({
+                "id": a.id,
+                "pos": [round(t.location.x, 2), round(t.location.y, 2)],
+                "yaw": round(t.rotation.yaw, 1),
+                "type": "traffic" if a.id in _traffic_actor_ids else "other",
+            })
+
+        return actors
+
     def set_weather(self, params: dict) -> dict:
         """Apply weather parameters to the CARLA world."""
         if not self._active:
@@ -649,6 +782,11 @@ class DriveSession:
                 continue
 
             sig_type = zone.get("signal_type", "warning")
+
+            # Info zones: skip 3D visualization entirely. Proximity alerts still fire.
+            if sig_type == "info":
+                continue
+
             color = COLORS.get(sig_type, COLORS["warning"])
             hatch_color = HATCH_COLORS.get(sig_type, HATCH_COLORS["warning"])
 
@@ -665,7 +803,7 @@ class DriveSession:
             if len(carla_points) < 3:
                 continue
 
-            # Draw outline
+            # Draw outline (warning/alert only)
             for i in range(len(carla_points)):
                 start = carla_points[i]
                 end = carla_points[(i + 1) % len(carla_points)]
@@ -676,7 +814,7 @@ class DriveSession:
                     life_time=6.0,
                 )
 
-            # Draw diagonal hatching inside the polygon
+            # Draw diagonal hatching inside the polygon (warning/alert only)
             hatches = self._compute_hatching(carla_points, spacing=2.0)
             for h_start, h_end in hatches:
                 self._world.debug.draw_line(
@@ -869,6 +1007,10 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return session.set_weather(msg.get("params", {}))
         elif msg_type == "set_camera_settings":
             return session.set_camera_settings(msg.get("params", {}))
+        elif msg_type == "spawn_traffic":
+            return session.spawn_traffic(msg.get("preset", "medium"))
+        elif msg_type == "despawn_traffic":
+            return session.despawn_traffic()
         elif msg_type == "sync_v2x_zones":
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":

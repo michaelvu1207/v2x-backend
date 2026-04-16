@@ -313,6 +313,16 @@ export function setCameraSettings(params: Record<string, string | number>): void
 	send({ type: 'set_camera_settings', params });
 }
 
+// ── Traffic Actions ──
+
+export function spawnTraffic(preset: string): void {
+	send({ type: 'spawn_traffic', preset });
+}
+
+export function despawnTraffic(): void {
+	send({ type: 'despawn_traffic' });
+}
+
 // ── V2X Zone Actions ──
 
 export function syncV2xZones(zones: { polygon: [number, number][]; signal_type: string; color: string }[]): void {

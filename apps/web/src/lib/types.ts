@@ -75,6 +75,13 @@ export type DriveSessionState =
 	| 'ending'
 	| 'error';
 
+export interface NearbyActor {
+	id: number;
+	pos: [number, number];
+	yaw: number;
+	type: 'traffic' | 'other';
+}
+
 export interface VehicleTelemetry {
 	speed: number;
 	gear: number;
@@ -83,7 +90,10 @@ export interface VehicleTelemetry {
 	steer: number;
 	throttle: number;
 	brake: number;
+	nearby_actors?: NearbyActor[];
 }
+
+export type TrafficPreset = 'none' | 'light' | 'medium' | 'heavy' | 'chaos';
 
 export interface GamepadCalibration {
 	steerAxis: number;

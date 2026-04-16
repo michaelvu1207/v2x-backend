@@ -221,7 +221,9 @@ async def main():
             if _active_sessions:
                 continue
             try:
-                vehicles = world.get_actors().filter("vehicle.*")
+                from digital_twin_bridge.drive_server import _traffic_actor_ids
+                vehicles = [v for v in world.get_actors().filter("vehicle.*")
+                            if v.id not in _traffic_actor_ids]
                 sensors = world.get_actors().filter("sensor.*")
                 orphaned = len(vehicles) + len(sensors)
                 if orphaned > 0:

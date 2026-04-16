@@ -55,6 +55,7 @@
 	import V2xZoneEditor from '$lib/components/V2xZoneEditor.svelte';
 	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
 	import WeatherPanel from '$lib/components/WeatherPanel.svelte';
+	import TrafficPanel from '$lib/components/TrafficPanel.svelte';
 	import { checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
 	import { v2xZones } from '$lib/stores/v2xZones';
 	import { syncV2xZones } from '$lib/stores/driveSocket';
@@ -77,6 +78,7 @@
 	let scenarioName = $state('');
 	let showZoneEditor = $state(false);
 	let showWeatherPanel = $state(false);
+	let showTrafficPanel = $state(false);
 	let mapData = $state<MapDataResponse | null>(null);
 	let numZones = $derived($v2xZones.length);
 
@@ -548,11 +550,17 @@
 
 				<!-- Bottom left action buttons -->
 				<div class="absolute bottom-2 left-2 z-20 flex gap-1 pointer-events-auto">
-					<button onclick={() => { showWeatherPanel = !showWeatherPanel; }}
+					<button onclick={() => { showWeatherPanel = !showWeatherPanel; showTrafficPanel = false; }}
 						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showWeatherPanel
 							? 'bg-cyan-600 text-white'
 							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
 						Weather
+					</button>
+					<button onclick={() => { showTrafficPanel = !showTrafficPanel; showWeatherPanel = false; }}
+						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showTrafficPanel
+							? 'bg-amber-600 text-white'
+							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						Traffic
 					</button>
 					<button onclick={() => respawnVehicle()}
 						class="px-2 py-1 bg-blue-600/70 hover:bg-blue-600 rounded text-[10px] font-medium text-white transition-colors">
@@ -572,6 +580,11 @@
 				<!-- Weather Settings Panel -->
 				{#if showWeatherPanel}
 					<WeatherPanel onClose={() => { showWeatherPanel = false; }} />
+				{/if}
+
+				<!-- Traffic Panel -->
+				{#if showTrafficPanel}
+					<TrafficPanel onClose={() => { showTrafficPanel = false; }} />
 				{/if}
 			</div>
 
