@@ -6,6 +6,7 @@
 	import { MAP_CENTER, DEFAULT_ZOOM, MAP_STYLE_URL } from '$lib/constants';
 	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
 	import { v2xZones, addZone, removeZone, updateZone } from '$lib/stores/v2xZones';
+	import { saveScenario, driveConnected } from '$lib/stores/driveSocket';
 	import type { V2xZone } from '$lib/types';
 
 	interface Props {
@@ -23,6 +24,9 @@
 	let zoneName = $state('');
 	let zoneMessage = $state('');
 	let zoneType = $state<'warning' | 'info' | 'alert'>('warning');
+	let showSaveDialog = $state(false);
+	let scenarioNameInput = $state('');
+	let saveStatus = $state<string>('');
 
 	const ZONE_COLORS: Record<string, string> = {
 		warning: '#ef4444',
@@ -235,6 +239,24 @@
 		onclose();
 	}
 
+	function handleSaveAsScenario() {
+		const name = scenarioNameInput.trim();
+		if (!name) return;
+		if ($v2xZones.length === 0) {
+			saveStatus = 'No zones to save';
+			return;
+		}
+		if (!$driveConnected) {
+			saveStatus = 'Connect to drive server to save';
+			return;
+		}
+		saveScenario(name, $v2xZones);
+		saveStatus = `Saved "${name}"`;
+		scenarioNameInput = '';
+		showSaveDialog = false;
+		setTimeout(() => { saveStatus = ''; }, 2500);
+	}
+
 	function buildRoadGeoJSON(lines: number[][][]): GeoJSON.FeatureCollection {
 		return {
 			type: 'FeatureCollection',
@@ -407,12 +429,51 @@
 		</div>
 
 		<!-- Footer actions -->
-		<div class="border-t border-gray-800 px-4 py-3">
+		<div class="border-t border-gray-800 px-4 py-3 flex flex-col gap-2">
+			{#if showSaveDialog}
+				<div class="flex gap-1">
+					<input
+						type="text"
+						bind:value={scenarioNameInput}
+						placeholder="Scenario name..."
+						class="flex-1 rounded border border-gray-700 bg-gray-800 px-2 py-1.5 text-xs text-white placeholder:text-gray-600 focus:border-blue-500 focus:outline-none"
+						onkeydown={(e) => {
+							if (e.key === 'Enter') handleSaveAsScenario();
+							if (e.key === 'Escape') { showSaveDialog = false; scenarioNameInput = ''; }
+						}}
+					/>
+					<button
+						class="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+						onclick={handleSaveAsScenario}
+						disabled={!scenarioNameInput.trim()}
+					>
+						Save
+					</button>
+					<button
+						class="rounded bg-gray-700 px-2 py-1.5 text-xs text-gray-300 hover:bg-gray-600"
+						onclick={() => { showSaveDialog = false; scenarioNameInput = ''; }}
+					>
+						X
+					</button>
+				</div>
+			{:else}
+				<button
+					class="w-full rounded border border-blue-600/40 bg-blue-600/10 px-3 py-2 text-xs font-medium text-blue-300 transition-colors hover:bg-blue-600/20 disabled:opacity-40 disabled:cursor-not-allowed"
+					onclick={() => { showSaveDialog = true; }}
+					disabled={zones.length === 0}
+					title={zones.length === 0 ? 'Draw at least one zone to save' : 'Save these zones as a reusable scenario'}
+				>
+					Save as Scenario{zones.length > 0 ? ` (${zones.length})` : ''}
+				</button>
+			{/if}
+			{#if saveStatus}
+				<p class="text-center text-[10px] text-gray-400">{saveStatus}</p>
+			{/if}
 			<button
 				class="w-full rounded bg-green-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-green-500"
 				onclick={handleClose}
 			>
-				Done — Start Driving
+				Done — Back to Drive
 			</button>
 		</div>
 	</div>

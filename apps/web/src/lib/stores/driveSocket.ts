@@ -6,7 +6,8 @@
  */
 
 import { writable, get } from 'svelte/store';
-import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert } from '$lib/types';
+import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert, V2xZone } from '$lib/types';
+import { v2xZones } from './v2xZones';
 
 // ── Stores ──
 
@@ -176,7 +177,10 @@ function handleServerMessage(msg: DriveMessage): void {
 			break;
 
 		case 'scenario_loaded':
-			placedCount.set(msg.placed_count as number);
+			placedCount.set((msg.placed_count as number) ?? 0);
+			if (Array.isArray(msg.zones)) {
+				v2xZones.set(msg.zones as V2xZone[]);
+			}
 			break;
 
 		case 'scenario_deleted':
@@ -264,8 +268,8 @@ export function requestScenarios(): void {
 	send({ type: 'list_scenarios' });
 }
 
-export function saveScenario(name: string): void {
-	send({ type: 'save_scenario', name });
+export function saveScenario(name: string, zones: V2xZone[] = []): void {
+	send({ type: 'save_scenario', name, zones });
 }
 
 export function loadScenario(file: string): void {

@@ -2,6 +2,7 @@
 
 import json
 import asyncio
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -224,3 +225,173 @@ class TestDriveServerMessageHandling:
         response = await handle_message(session, {"type": "bogus"})
         assert response["type"] == "error"
         assert "unknown" in response["message"].lower() or "Unknown" in response["message"]
+
+
+@pytest.mark.unit
+class TestScenarioStorageCompatibility:
+    """Scenario file storage should remain compatible across repo moves."""
+
+    def test_list_scenarios_includes_legacy_directory(self, tmp_path, monkeypatch):
+        """Legacy pre-reorg scenarios should still appear in the picker."""
+        from digital_twin_bridge import drive_server
+
+        current_dir = tmp_path / "bridge" / "scenes"
+        legacy_dir = tmp_path / "v2x-digital-twin-bridge" / "scenes"
+        current_dir.mkdir(parents=True)
+        legacy_dir.mkdir(parents=True)
+
+        (legacy_dir / "legacy_scene.json").write_text(json.dumps({
+            "name": "Legacy Scene",
+            "objects": [{"blueprint": "static.prop.trafficcone01"}],
+        }))
+
+        monkeypatch.setattr(drive_server, "SCENARIOS_DIR", os.fspath(current_dir))
+        monkeypatch.setattr(drive_server, "LEGACY_SCENARIOS_DIR", os.fspath(legacy_dir))
+
+        scenarios = drive_server.list_scenarios()
+
+        assert scenarios == [{
+            "name": "Legacy Scene",
+            "file": "legacy_scene.json",
+            "object_count": 1,
+            "zone_count": 0,
+        }]
+
+    def test_load_scenario_falls_back_to_legacy_directory(self, tmp_path, monkeypatch):
+        """Loading should work even when the scenario only exists at the old path."""
+        from digital_twin_bridge import drive_server
+
+        current_dir = tmp_path / "bridge" / "scenes"
+        legacy_dir = tmp_path / "v2x-digital-twin-bridge" / "scenes"
+        current_dir.mkdir(parents=True)
+        legacy_dir.mkdir(parents=True)
+
+        payload = {
+            "name": "Legacy Scene",
+            "objects": [{"blueprint": "static.prop.trafficwarning", "pos": [1, 2, 3], "yaw": 45}],
+        }
+        (legacy_dir / "legacy_scene.json").write_text(json.dumps(payload))
+
+        monkeypatch.setattr(drive_server, "SCENARIOS_DIR", os.fspath(current_dir))
+        monkeypatch.setattr(drive_server, "LEGACY_SCENARIOS_DIR", os.fspath(legacy_dir))
+
+        scenario = drive_server.load_scenario("legacy_scene.json")
+
+        assert scenario == payload
+
+    def test_current_directory_wins_when_duplicate_filenames_exist(self, tmp_path, monkeypatch):
+        """Current scenarios should take precedence over legacy copies with the same filename."""
+        from digital_twin_bridge import drive_server
+
+        current_dir = tmp_path / "bridge" / "scenes"
+        legacy_dir = tmp_path / "v2x-digital-twin-bridge" / "scenes"
+        current_dir.mkdir(parents=True)
+        legacy_dir.mkdir(parents=True)
+
+        (current_dir / "shared_scene.json").write_text(json.dumps({
+            "name": "Current Scene",
+            "objects": [{"blueprint": "vehicle.tesla.model3"}],
+        }))
+        (legacy_dir / "shared_scene.json").write_text(json.dumps({
+            "name": "Legacy Scene",
+            "objects": [],
+        }))
+
+        monkeypatch.setattr(drive_server, "SCENARIOS_DIR", os.fspath(current_dir))
+        monkeypatch.setattr(drive_server, "LEGACY_SCENARIOS_DIR", os.fspath(legacy_dir))
+
+        scenarios = drive_server.list_scenarios()
+        scenario = drive_server.load_scenario("shared_scene.json")
+
+        assert scenarios == [{
+            "name": "Current Scene",
+            "file": "shared_scene.json",
+            "object_count": 1,
+            "zone_count": 0,
+        }]
+        assert scenario["name"] == "Current Scene"
+
+
+@pytest.mark.unit
+class TestScenarioZonePersistence:
+    """Scenarios should round-trip V2X zones alongside placed objects."""
+
+    def test_save_scenario_persists_zones(self, tmp_path, monkeypatch):
+        from digital_twin_bridge import drive_server
+
+        scenes = tmp_path / "scenes"
+        scenes.mkdir()
+        monkeypatch.setattr(drive_server, "SCENARIOS_DIR", os.fspath(scenes))
+        monkeypatch.setattr(drive_server, "LEGACY_SCENARIOS_DIR", os.fspath(scenes))
+
+        zones = [{
+            "id": "z1",
+            "name": "Main & 2nd",
+            "message": "school zone",
+            "signal_type": "warning",
+            "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]],
+            "color": "#ef4444",
+        }]
+
+        result = drive_server.save_scenario(
+            name="School Zone Test",
+            objects=[{"blueprint": "static.prop.trafficcone01", "pos": [0, 0, 0], "yaw": 0}],
+            zones=zones,
+        )
+
+        assert result["zone_count"] == 1
+        assert result["object_count"] == 1
+
+        loaded = drive_server.load_scenario(result["file"])
+        assert loaded["zones"] == zones
+        assert loaded["objects"][0]["blueprint"] == "static.prop.trafficcone01"
+
+    def test_save_scenario_without_zones_keeps_empty_list(self, tmp_path, monkeypatch):
+        from digital_twin_bridge import drive_server
+
+        scenes = tmp_path / "scenes"
+        scenes.mkdir()
+        monkeypatch.setattr(drive_server, "SCENARIOS_DIR", os.fspath(scenes))
+        monkeypatch.setattr(drive_server, "LEGACY_SCENARIOS_DIR", os.fspath(scenes))
+
+        result = drive_server.save_scenario(
+            name="Objects Only",
+            objects=[{"blueprint": "static.prop.trafficcone01", "pos": [0, 0, 0], "yaw": 0}],
+        )
+
+        loaded = drive_server.load_scenario(result["file"])
+        assert loaded["zones"] == []
+        assert result["zone_count"] == 0
+
+    def test_load_scenario_handler_returns_zones_without_active_session(self, tmp_path, monkeypatch):
+        """At idle (no session), load_scenario should return zones without spawning objects."""
+        from digital_twin_bridge import drive_server
+
+        scenes = tmp_path / "scenes"
+        scenes.mkdir()
+        monkeypatch.setattr(drive_server, "SCENARIOS_DIR", os.fspath(scenes))
+        monkeypatch.setattr(drive_server, "LEGACY_SCENARIOS_DIR", os.fspath(scenes))
+
+        zones = [{"id": "z1", "name": "Z", "message": "", "signal_type": "info",
+                  "polygon": [[0, 0], [1, 0], [1, 1]], "color": "#3b82f6"}]
+        drive_server.save_scenario(
+            name="Idle Load",
+            objects=[{"blueprint": "static.prop.trafficcone01", "pos": [0, 0, 0], "yaw": 0}],
+            zones=zones,
+        )
+
+        session = MagicMock()
+        session.is_active = False
+        session._placed_objects = []
+
+        response = asyncio.run(drive_server.handle_message(session, {
+            "type": "load_scenario",
+            "file": "idle_load.json",
+        }))
+
+        assert response["type"] == "scenario_loaded"
+        assert response["zones"] == zones
+        assert response["spawned"] == 0
+        assert response["placed_count"] == 0
+        # Should NOT have spawned objects when session is inactive
+        session.load_scenario_objects.assert_not_called()

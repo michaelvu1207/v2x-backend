@@ -107,11 +107,31 @@ def get_spawnable_objects(world) -> list[dict]:
 import os
 import re
 
-SCENARIOS_DIR = os.path.join(os.path.dirname(__file__), "..", "scenes")
+BRIDGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+APPS_ROOT = os.path.abspath(os.path.join(BRIDGE_ROOT, ".."))
+SCENARIOS_DIR = os.path.join(BRIDGE_ROOT, "scenes")
+LEGACY_SCENARIOS_DIR = os.path.join(APPS_ROOT, "v2x-digital-twin-bridge", "scenes")
 
 
 def _ensure_scenes_dir():
     os.makedirs(SCENARIOS_DIR, exist_ok=True)
+
+
+def _scenario_dirs() -> list[str]:
+    """Search current storage first, then the pre-reorg legacy location."""
+    dirs = [SCENARIOS_DIR]
+    if LEGACY_SCENARIOS_DIR != SCENARIOS_DIR:
+        dirs.append(LEGACY_SCENARIOS_DIR)
+    return dirs
+
+
+def _resolve_scenario_path(filename: str) -> str:
+    """Find a scenario file in the current or legacy storage location."""
+    for base_dir in _scenario_dirs():
+        fpath = os.path.join(base_dir, filename)
+        if os.path.isfile(fpath):
+            return fpath
+    raise FileNotFoundError(f"Scenario file not found: {filename}")
 
 
 def _sanitize_name(name: str) -> str:
@@ -125,50 +145,59 @@ def _sanitize_name(name: str) -> str:
 def list_scenarios() -> list[dict]:
     """List all saved scenario files."""
     _ensure_scenes_dir()
-    scenarios = []
-    for fname in sorted(os.listdir(SCENARIOS_DIR)):
-        if not fname.endswith(".json"):
+    scenarios_by_file: dict[str, dict] = {}
+    for base_dir in _scenario_dirs():
+        if not os.path.isdir(base_dir):
             continue
-        fpath = os.path.join(SCENARIOS_DIR, fname)
-        try:
-            with open(fpath) as f:
-                data = json.load(f)
-            scenarios.append({
-                "name": data.get("name", fname.replace(".json", "")),
-                "file": fname,
-                "object_count": len(data.get("objects", [])),
-            })
-        except Exception:
-            continue
+        for fname in sorted(os.listdir(base_dir)):
+            if not fname.endswith(".json") or fname in scenarios_by_file:
+                continue
+            fpath = os.path.join(base_dir, fname)
+            try:
+                with open(fpath) as f:
+                    data = json.load(f)
+                scenarios_by_file[fname] = {
+                    "name": data.get("name", fname.replace(".json", "")),
+                    "file": fname,
+                    "object_count": len(data.get("objects", [])),
+                    "zone_count": len(data.get("zones", [])),
+                }
+            except Exception:
+                continue
+    scenarios = list(scenarios_by_file.values())
+    scenarios.sort(key=lambda scenario: scenario["name"].lower())
     return scenarios
 
 
-def save_scenario(name: str, objects: list[dict]) -> dict:
-    """Save a scenario to disk."""
+def save_scenario(name: str, objects: list[dict], zones: list[dict] | None = None) -> dict:
+    """Save a scenario to disk. Includes both placed CARLA objects and V2X zones."""
     _ensure_scenes_dir()
+    zones = zones or []
     slug = _sanitize_name(name)
     fpath = os.path.join(SCENARIOS_DIR, f"{slug}.json")
-    data = {"name": name, "objects": objects}
+    data = {"name": name, "objects": objects, "zones": zones}
     with open(fpath, "w") as f:
         json.dump(data, f, indent=2)
-    logger.info("Scenario saved: %s (%d objects) → %s", name, len(objects), fpath)
-    return {"type": "scenario_saved", "name": name, "file": f"{slug}.json", "object_count": len(objects)}
+    logger.info("Scenario saved: %s (%d objects, %d zones) → %s", name, len(objects), len(zones), fpath)
+    return {
+        "type": "scenario_saved",
+        "name": name,
+        "file": f"{slug}.json",
+        "object_count": len(objects),
+        "zone_count": len(zones),
+    }
 
 
 def load_scenario(filename: str) -> dict:
     """Load a scenario from disk."""
-    fpath = os.path.join(SCENARIOS_DIR, filename)
-    if not os.path.isfile(fpath):
-        raise FileNotFoundError(f"Scenario file not found: {filename}")
+    fpath = _resolve_scenario_path(filename)
     with open(fpath) as f:
         return json.load(f)
 
 
 def delete_scenario(filename: str) -> dict:
     """Delete a scenario file."""
-    fpath = os.path.join(SCENARIOS_DIR, filename)
-    if not os.path.isfile(fpath):
-        raise FileNotFoundError(f"Scenario file not found: {filename}")
+    fpath = _resolve_scenario_path(filename)
     os.remove(fpath)
     logger.info("Scenario deleted: %s", filename)
     return {"type": "scenario_deleted", "file": filename}
@@ -978,12 +1007,30 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return {"type": "scenario_list", "scenarios": list_scenarios()}
         elif msg_type == "save_scenario":
             snapshot = session.get_placed_snapshot()
-            if not snapshot:
-                return {"type": "error", "message": "No objects placed to save"}
-            return save_scenario(name=msg["name"], objects=snapshot)
+            zones = msg.get("zones", []) or []
+            if not snapshot and not zones:
+                return {"type": "error", "message": "Nothing to save — place objects or draw zones first"}
+            return save_scenario(name=msg["name"], objects=snapshot, zones=zones)
         elif msg_type == "load_scenario":
             data = load_scenario(msg["file"])
-            return session.load_scenario_objects(data.get("objects", []))
+            objects = data.get("objects", [])
+            zones = data.get("zones", [])
+            result = {
+                "type": "scenario_loaded",
+                "name": data.get("name", ""),
+                "file": msg["file"],
+                "zones": zones,
+                "spawned": 0,
+                "failed": 0,
+                "placed_count": len(session._placed_objects) if session.is_active else 0,
+            }
+            # Only spawn CARLA objects if session is active; zones load either way
+            if session.is_active and objects:
+                spawn_result = session.load_scenario_objects(objects)
+                result["spawned"] = spawn_result["spawned"]
+                result["failed"] = spawn_result["failed"]
+                result["placed_count"] = spawn_result["placed_count"]
+            return result
         elif msg_type == "delete_scenario":
             return delete_scenario(msg["file"])
         elif msg_type == "start_session":

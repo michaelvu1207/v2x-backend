@@ -126,6 +126,7 @@ export interface ScenarioInfo {
 	name: string;
 	file: string;
 	object_count: number;
+	zone_count?: number;
 }
 
 export interface V2xSignal {

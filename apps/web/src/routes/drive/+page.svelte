@@ -41,6 +41,7 @@
 		requestScenarios,
 		saveScenario,
 		loadScenario,
+		deleteScenario,
 		spawnObject,
 		undoPlace,
 		undoV2xSignal,
@@ -56,7 +57,7 @@
 	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
 	import WeatherPanel from '$lib/components/WeatherPanel.svelte';
 	import TrafficPanel from '$lib/components/TrafficPanel.svelte';
-	import { checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
+	import { checkZoneProximity, resetZoneProximity, clearZones } from '$lib/stores/v2xZones';
 	import { v2xZones } from '$lib/stores/v2xZones';
 	import { syncV2xZones } from '$lib/stores/driveSocket';
 	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
@@ -164,11 +165,20 @@
 		cleanupSession();
 	});
 
-	// Auto-load scenario when session becomes driving
+	// Load scenario zones immediately at idle when user selects one.
+	// Server responds with zones (and no object spawn because no active session).
+	let lastLoadedScenarioFile = $state('');
+	$effect(() => {
+		if (!$driveConnected || !selectedScenario) return;
+		if (selectedScenario === lastLoadedScenarioFile) return;
+		lastLoadedScenarioFile = selectedScenario;
+		loadScenario(selectedScenario);
+	});
+
+	// Re-load scenario once driving so the server spawns the scenario's CARLA objects.
 	$effect(() => {
 		if ($sessionState === 'driving' && selectedScenario) {
 			loadScenario(selectedScenario);
-			selectedScenario = '';
 		}
 	});
 
@@ -181,9 +191,26 @@
 	function handleSaveScenario() {
 		const name = scenarioName.trim();
 		if (!name) return;
-		saveScenario(name);
+		saveScenario(name, $v2xZones);
 		scenarioName = '';
 		showSaveDialog = false;
+	}
+
+	function handleDeleteScenario(file: string) {
+		if (!file) return;
+		if (!confirm('Delete this scenario? This cannot be undone.')) return;
+		deleteScenario(file);
+		if (selectedScenario === file) {
+			selectedScenario = '';
+			lastLoadedScenarioFile = '';
+		}
+	}
+
+	function handleNewScenario() {
+		// Clear selection and zones so user starts with a blank slate.
+		selectedScenario = '';
+		lastLoadedScenarioFile = '';
+		clearZones();
 	}
 
 	// V2X zone proximity check — runs on every telemetry update during driving
@@ -411,10 +438,10 @@
 					</div>
 
 					<!-- Scenario preset -->
-					{#if scenarios.length > 0}
-						<div class="mb-5">
-							<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Scenario</label>
-							<div class="relative">
+					<div class="mb-5">
+						<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Scenario</label>
+						<div class="flex gap-2">
+							<div class="relative flex-1">
 								<select
 									bind:value={selectedScenario}
 									class="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-white focus:outline-none focus:border-accent/50 focus:shadow-[0_0_10px_rgba(220,38,38,0.1)] appearance-none cursor-pointer transition-all duration-200"
@@ -422,7 +449,7 @@
 									<option value="">No scenario (empty world)</option>
 									{#each scenarios as s}
 										<option value={s.file}>
-											{s.name} ({s.object_count} objects)
+											{s.name} ({s.object_count} obj{#if s.zone_count}, {s.zone_count} zone{s.zone_count !== 1 ? 's' : ''}{/if})
 										</option>
 									{/each}
 								</select>
@@ -430,8 +457,23 @@
 									<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
 								</svg>
 							</div>
+							{#if selectedScenario}
+								<button onclick={() => handleDeleteScenario(selectedScenario)}
+									title="Delete scenario"
+									class="px-3 py-2.5 bg-gray-800/50 hover:bg-red-600/30 border border-gray-800 hover:border-red-500/60 rounded-xl text-red-400 transition-all duration-200 cursor-pointer">
+									<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+										<path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V5a2 2 0 012-2h2a2 2 0 012 2v2" />
+									</svg>
+								</button>
+							{:else if $v2xZones.length > 0}
+								<button onclick={handleNewScenario}
+									title="Clear zones for a fresh scenario"
+									class="px-3 py-2.5 bg-gray-800/50 hover:bg-gray-800 border border-gray-800 hover:border-gray-700 rounded-xl text-gray-400 hover:text-white transition-all duration-200 cursor-pointer text-xs font-body tracking-wide">
+									Clear
+								</button>
+							{/if}
 						</div>
-					{/if}
+					</div>
 
 					<!-- V2X Zone Editor button -->
 					<div class="mb-4">
@@ -655,8 +697,10 @@
 						</div>
 					{:else}
 						<div class="flex items-center justify-between">
-							<span class="text-[10px] text-gray-500">P toggle | Click to place | U undo</span>
-							{#if numPlaced > 0}
+							<span class="text-[10px] text-gray-500">
+								{numPlaced} obj{#if numZones > 0}, {numZones} zone{numZones !== 1 ? 's' : ''}{/if} · P toggle
+							</span>
+							{#if numPlaced > 0 || numZones > 0}
 								<button onclick={() => { showSaveDialog = true; }}
 									class="px-2 py-0.5 bg-green-600/50 hover:bg-green-600 rounded text-[10px] text-white">
 									Save Scene
