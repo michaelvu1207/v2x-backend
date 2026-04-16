@@ -303,6 +303,12 @@ export function dismissV2xAlert(alertId: number): void {
 	v2xAlerts.update(list => list.filter(a => a.id !== alertId));
 }
 
+// ── Weather Actions ──
+
+export function setWeather(params: Record<string, number>): void {
+	send({ type: 'set_weather', params });
+}
+
 // ── V2X Zone Actions ──
 
 export function syncV2xZones(zones: { polygon: [number, number][]; signal_type: string; color: string }[]): void {

@@ -54,6 +54,7 @@
 	import V2xSignalPlacer from '$lib/components/V2xSignalPlacer.svelte';
 	import V2xZoneEditor from '$lib/components/V2xZoneEditor.svelte';
 	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
+	import WeatherPanel from '$lib/components/WeatherPanel.svelte';
 	import { checkZoneProximity, resetZoneProximity } from '$lib/stores/v2xZones';
 	import { v2xZones } from '$lib/stores/v2xZones';
 	import { syncV2xZones } from '$lib/stores/driveSocket';
@@ -75,6 +76,7 @@
 	let showSaveDialog = $state(false);
 	let scenarioName = $state('');
 	let showZoneEditor = $state(false);
+	let showWeatherPanel = $state(false);
 	let mapData = $state<MapDataResponse | null>(null);
 	let numZones = $derived($v2xZones.length);
 
@@ -534,6 +536,12 @@
 					{view.label}
 				</button>
 			{/each}
+			<button onclick={() => { showWeatherPanel = !showWeatherPanel; }}
+				class="px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors {showWeatherPanel
+					? 'bg-cyan-600 text-white'
+					: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
+				Weather
+			</button>
 			<button onclick={() => respawnVehicle()}
 				class="px-2.5 py-1.5 bg-blue-600/70 hover:bg-blue-600 rounded-lg text-xs font-medium text-white transition-colors">
 				Respawn
@@ -574,6 +582,11 @@
 		<!-- V2X Signal Placer Panel -->
 		{#if showV2xPlacer}
 			<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />
+		{/if}
+
+		<!-- Weather Settings Panel -->
+		{#if showWeatherPanel}
+			<WeatherPanel onClose={() => { showWeatherPanel = false; }} />
 		{/if}
 
 		<!-- Object Placer Panel — slide-in from bottom-left -->

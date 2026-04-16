@@ -536,6 +536,34 @@ class DriveSession:
             "placed_count": len(self._placed_objects),
         }
 
+    def set_weather(self, params: dict) -> dict:
+        """Apply weather parameters to the CARLA world."""
+        if not self._active:
+            raise RuntimeError("No active session")
+
+        import carla
+
+        weather = carla.WeatherParameters(
+            cloudiness=float(params.get("cloudiness", 0)),
+            precipitation=float(params.get("precipitation", 0)),
+            precipitation_deposits=float(params.get("precipitation_deposits", 0)),
+            wind_intensity=float(params.get("wind_intensity", 0)),
+            sun_azimuth_angle=float(params.get("sun_azimuth_angle", 45)),
+            sun_altitude_angle=float(params.get("sun_altitude_angle", 45)),
+            fog_density=float(params.get("fog_density", 0)),
+            fog_distance=float(params.get("fog_distance", 0)),
+            fog_falloff=float(params.get("fog_falloff", 0)),
+            wetness=float(params.get("wetness", 0)),
+            scattering_intensity=float(params.get("scattering_intensity", 1)),
+            mie_scattering_scale=float(params.get("mie_scattering_scale", 0.03)),
+            rayleigh_scattering_scale=float(params.get("rayleigh_scattering_scale", 0.0331)),
+            dust_storm=float(params.get("dust_storm", 0)),
+        )
+        self._world.set_weather(weather)
+        logger.info("Weather updated: sun_alt=%.0f, cloud=%.0f, rain=%.0f",
+                     weather.sun_altitude_angle, weather.cloudiness, weather.precipitation)
+        return {"type": "weather_set"}
+
     def sync_v2x_zones(self, zones: list[dict]) -> dict:
         """Draw V2X zone outlines + hatching on the CARLA ground.
 
@@ -784,6 +812,8 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
         elif msg_type == "camera_switch":
             session.switch_camera(msg["view"])
             return {"type": "camera_switched", "view": msg["view"]}
+        elif msg_type == "set_weather":
+            return session.set_weather(msg.get("params", {}))
         elif msg_type == "sync_v2x_zones":
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":
