@@ -39,13 +39,27 @@ class SceneReconstructor:
     """
     Queries the V2X detection API for a time range and spawns
     all detected objects in the CARLA world.
+
+    When a ``shared_pool`` is passed, spawns are recorded by ``object_id`` and
+    shared across concurrent driving sessions. In that mode the reconstructor
+    skips objects already spawned by any session and ``cleanup()`` becomes a
+    no-op — the server owns pool lifetime and destroys them at shutdown.
     """
 
-    def __init__(self, world, carla_map, api_fetcher: Callable):
+    def __init__(
+        self,
+        world,
+        carla_map,
+        api_fetcher: Callable,
+        shared_pool: Optional[dict] = None,
+    ):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
         self._spawned_actors: list[SpawnedActor] = []
+        # object_id -> actor_id. Caller-owned when provided (shared across sessions).
+        self._shared_pool = shared_pool
+        self._owns_actors = shared_pool is None
 
     def reconstruct(self, start: str, end: str, limit: int = 500) -> ReconstructionResult:
         """
@@ -79,9 +93,24 @@ class SceneReconstructor:
 
         # 3. Spawn each object in CARLA
         bp_lib = self._world.get_blueprint_library()
+        reused = 0
 
         for obj in result.objects:
+            oid = obj["object_id"]
             obj_type = obj.get("object_type", "unknown")
+
+            # Skip if another session (or boot) already spawned this object.
+            if self._shared_pool is not None and oid in self._shared_pool:
+                result.spawned_actors.append(SpawnedActor(
+                    id=self._shared_pool[oid],
+                    object_id=oid,
+                    object_type=obj_type,
+                    lat=obj.get("gps_location", {}).get("latitude", 0.0),
+                    lon=obj.get("gps_location", {}).get("longitude", 0.0),
+                ))
+                reused += 1
+                continue
+
             bp_id = OBJECT_TYPE_TO_BLUEPRINT.get(obj_type, DEFAULT_BLUEPRINT)
             blueprints = bp_lib.filter(bp_id)
             if not blueprints:
@@ -102,19 +131,32 @@ class SceneReconstructor:
 
             spawned = SpawnedActor(
                 id=actor.id,
-                object_id=obj["object_id"],
+                object_id=oid,
                 object_type=obj_type,
                 lat=lat,
                 lon=lon,
             )
-            self._spawned_actors.append(spawned)
+            if self._shared_pool is not None:
+                self._shared_pool[oid] = actor.id
+            else:
+                self._spawned_actors.append(spawned)
             result.spawned_actors.append(spawned)
 
-        logger.info("Scene reconstruction complete: %d actors spawned", len(result.spawned_actors))
+        logger.info(
+            "Scene reconstruction complete: %d actors (%d newly spawned, %d reused from pool)",
+            len(result.spawned_actors), len(result.spawned_actors) - reused, reused,
+        )
         return result
 
     def cleanup(self) -> int:
-        """Destroy all actors spawned by this reconstructor."""
+        """Destroy actors owned by this reconstructor.
+
+        No-op when a shared pool is in use — the server is responsible for
+        destroying shared props at shutdown so in-flight sessions aren't
+        disrupted when another session ends.
+        """
+        if not self._owns_actors:
+            return 0
         destroyed = 0
         for spawned in self._spawned_actors:
             actor = self._world.get_actor(spawned.id)

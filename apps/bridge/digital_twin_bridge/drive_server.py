@@ -209,10 +209,13 @@ class DriveSession:
     Lifecycle: start() -> apply_control() (repeated) -> end()
     """
 
-    def __init__(self, world, carla_map, api_fetcher: Callable):
+    def __init__(self, world, carla_map, api_fetcher: Callable, shared_prop_pool: Optional[dict] = None):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
+        # Shared V2X prop pool across sessions (object_id -> actor_id). Owned by
+        # the server process, not the session. None → session-owned props (legacy).
+        self._shared_prop_pool = shared_prop_pool
         self._reconstructor: Optional[SceneReconstructor] = None
         self.vehicle = None
         self.active_camera: str = "chase"
@@ -241,6 +244,7 @@ class DriveSession:
                 world=self._world,
                 carla_map=self._map,
                 api_fetcher=self._api_fetcher,
+                shared_pool=self._shared_prop_pool,
             )
             recon_result = self._reconstructor.reconstruct(start, end)
 
@@ -1107,14 +1111,22 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
 _active_sessions: list[DriveSession] = []
 
 
-async def serve_drive(websocket, world, carla_map, api_fetcher):
+async def serve_drive(websocket, world, carla_map, api_fetcher, shared_prop_pool: Optional[dict] = None):
     """
     Handle a single WebSocket connection for driving.
 
     Multiplayer: each connection gets its own vehicle, camera, and frame stream
     in the same CARLA world. All players see each other's cars.
+
+    ``shared_prop_pool`` is an object_id→actor_id map shared across sessions so
+    V2X props persist even when an individual session ends.
     """
-    session = DriveSession(world=world, carla_map=carla_map, api_fetcher=api_fetcher)
+    session = DriveSession(
+        world=world,
+        carla_map=carla_map,
+        api_fetcher=api_fetcher,
+        shared_prop_pool=shared_prop_pool,
+    )
     frame_task = None
     frame_stop = asyncio.Event()
 

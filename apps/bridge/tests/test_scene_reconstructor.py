@@ -97,6 +97,63 @@ class TestSceneReconstructor:
             assert mock_actor is not None
             assert mock_actor.is_destroyed
 
+    def test_shared_pool_skips_already_spawned(self, mock_world, fake_v2x_api):
+        """A second reconstructor sharing the pool should not re-spawn existing objects."""
+        from digital_twin_bridge.scene_reconstructor import SceneReconstructor
+
+        pool: dict[str, int] = {}
+
+        recon_a = SceneReconstructor(
+            world=mock_world,
+            carla_map=mock_world.get_map(),
+            api_fetcher=fake_v2x_api.get_detections_range,
+            shared_pool=pool,
+        )
+        result_a = recon_a.reconstruct("2026-03-22T17:00:00Z", "2026-03-22T17:30:00Z")
+        spawned_first = len(result_a.spawned_actors)
+        pool_size = len(pool)
+        assert spawned_first > 0
+        assert pool_size == spawned_first
+
+        spawn_counter_before = len([a for a in mock_world._actors.values() if not a.is_destroyed])
+
+        recon_b = SceneReconstructor(
+            world=mock_world,
+            carla_map=mock_world.get_map(),
+            api_fetcher=fake_v2x_api.get_detections_range,
+            shared_pool=pool,
+        )
+        result_b = recon_b.reconstruct("2026-03-22T17:00:00Z", "2026-03-22T17:30:00Z")
+
+        # Second pass reports the same actors (reused) but spawns no new ones.
+        assert len(result_b.spawned_actors) == spawned_first
+        assert len(pool) == pool_size
+        spawn_counter_after = len([a for a in mock_world._actors.values() if not a.is_destroyed])
+        assert spawn_counter_after == spawn_counter_before
+
+    def test_shared_pool_cleanup_is_noop(self, mock_world, fake_v2x_api):
+        """When a shared pool is in use, cleanup() must not destroy pool actors."""
+        from digital_twin_bridge.scene_reconstructor import SceneReconstructor
+
+        pool: dict[str, int] = {}
+        recon = SceneReconstructor(
+            world=mock_world,
+            carla_map=mock_world.get_map(),
+            api_fetcher=fake_v2x_api.get_detections_range,
+            shared_pool=pool,
+        )
+        result = recon.reconstruct("2026-03-22T17:00:00Z", "2026-03-22T17:30:00Z")
+        assert len(pool) > 0
+
+        destroyed = recon.cleanup()
+        assert destroyed == 0
+
+        # Pool actors still alive — a concurrent session would see them.
+        for actor_id in pool.values():
+            actor = mock_world.get_actor(actor_id)
+            assert actor is not None
+            assert not actor.is_destroyed
+
     def test_correct_gps_to_carla_conversion(self, mock_world, fake_v2x_api):
         """Objects should be spawned at CARLA coordinates derived from GPS."""
         from digital_twin_bridge.scene_reconstructor import SceneReconstructor

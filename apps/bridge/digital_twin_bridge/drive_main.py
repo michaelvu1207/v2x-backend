@@ -137,15 +137,31 @@ async def main():
     world = conn.world
     carla_map = conn.carla_map
 
-    # Clean up leftover actors from previous sessions
+    # Clean up leftover actors from previous sessions. `static.prop.*` includes
+    # V2X-detected cones/warnings from the previous boot plus any user-placed
+    # props left by spawn_object; without wiping them, each restart stacks a
+    # fresh copy on top of the old.
     for actor in world.get_actors().filter("vehicle.*"):
         logger.info("Cleaning up leftover vehicle: %s (id=%d)", actor.type_id, actor.id)
         actor.destroy()
     for actor in world.get_actors().filter("sensor.*"):
         logger.info("Cleaning up leftover sensor: %s (id=%d)", actor.type_id, actor.id)
         actor.destroy()
+    leftover_props = world.get_actors().filter("static.prop.*")
+    if leftover_props:
+        logger.info("Cleaning up %d leftover static prop(s) from previous boot", len(leftover_props))
+        for actor in leftover_props:
+            try:
+                actor.destroy()
+            except Exception as e:
+                logger.debug("Prop destroy failed (id=%d): %s", actor.id, e)
 
     # ── V2X: fetch snapshot and spawn props ──
+    # Shared pool of V2X props (object_id -> actor_id). Seeded by the boot
+    # snapshot and extended by each session's scene reconstruction. Never
+    # destroyed on session end — only at server shutdown — so props survive
+    # across sessions and between drivers in multiplayer.
+    shared_prop_pool: dict[str, int] = {}
     registry = None
     detections = fetch_v2x_snapshot(config)
     if detections:
@@ -164,7 +180,12 @@ async def main():
 
         spawner = PropSpawner(world, carla_map)
         spawned = spawner.sync(registry)
-        logger.info("Spawned %d V2X props in CARLA world", spawned)
+        # Seed the shared pool with the boot snapshot so session reconstructors
+        # skip objects we've already placed.
+        for obj in registry.get_all():
+            if obj.carla_actor_id is not None:
+                shared_prop_pool[obj.object_id] = obj.carla_actor_id
+        logger.info("Spawned %d V2X props in CARLA world (pool=%d)", spawned, len(shared_prop_pool))
 
     # ── Map data: export road network to S3 ──
     uplink = None
@@ -193,7 +214,7 @@ async def main():
     api_fetcher = make_api_fetcher(config)
 
     async def handler(websocket):
-        await serve_drive(websocket, world, carla_map, api_fetcher)
+        await serve_drive(websocket, world, carla_map, api_fetcher, shared_prop_pool)
 
     async def tick_loop():
         """Advance CARLA physics at 20 Hz.
@@ -225,11 +246,17 @@ async def main():
                 vehicles = [v for v in world.get_actors().filter("vehicle.*")
                             if v.id not in _traffic_actor_ids]
                 sensors = world.get_actors().filter("sensor.*")
-                orphaned = len(vehicles) + len(sensors)
+                # Boot-time V2X props are intentional; only sweep if we find a
+                # runaway count (>2x the tracked snapshot), which indicates
+                # stacked spawns from prior sessions.
+                props = list(world.get_actors().filter("static.prop.*"))
+                baseline = len(registry.get_all()) if registry else 0
+                props_to_clean = props if baseline and len(props) > baseline * 2 else []
+                orphaned = len(vehicles) + len(sensors) + len(props_to_clean)
                 if orphaned > 0:
                     logger.warning(
-                        "Actor audit: %d orphaned actors (vehicles=%d, sensors=%d). Cleaning up.",
-                        orphaned, len(vehicles), len(sensors),
+                        "Actor audit: %d orphaned actors (vehicles=%d, sensors=%d, props=%d). Cleaning up.",
+                        orphaned, len(vehicles), len(sensors), len(props_to_clean),
                     )
                     for a in sensors:
                         try:
@@ -241,6 +268,11 @@ async def main():
                         except Exception:
                             pass
                     for a in vehicles:
+                        try:
+                            a.destroy()
+                        except Exception:
+                            pass
+                    for a in props_to_clean:
                         try:
                             a.destroy()
                         except Exception:
@@ -290,6 +322,20 @@ async def main():
                     task.cancel()
                 except Exception:
                     pass
+
+        # Destroy shared V2X props (owned by the server, not any session).
+        if shared_prop_pool:
+            destroyed = 0
+            for actor_id in list(shared_prop_pool.values()):
+                try:
+                    actor = world.get_actor(actor_id)
+                    if actor is not None:
+                        actor.destroy()
+                        destroyed += 1
+                except Exception as e:
+                    logger.debug("Shared prop destroy failed (id=%d): %s", actor_id, e)
+            shared_prop_pool.clear()
+            logger.info("Destroyed %d shared V2X props at shutdown", destroyed)
 
         conn.disconnect()
         logger.info("Unified server stopped")
