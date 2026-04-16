@@ -13,11 +13,11 @@
 	let lastResult = $state<string>('');
 
 	const PRESETS: { id: TrafficPreset; label: string; count: string; desc: string }[] = [
-		{ id: 'none',   label: 'None',    count: '0',         desc: 'Empty map' },
-		{ id: 'light',  label: 'Light',   count: '20+10',     desc: '20 cars + 10 pedestrians' },
-		{ id: 'medium', label: 'Medium',  count: '60+25',     desc: '60 cars + 25 pedestrians' },
-		{ id: 'heavy',  label: 'Heavy',   count: '120+50',    desc: '120 cars + 50 pedestrians' },
-		{ id: 'chaos',  label: 'Chaos',   count: '180+80',    desc: 'V2X stress test' },
+		{ id: 'none',   label: 'None',    count: '0',   desc: 'Empty map' },
+		{ id: 'light',  label: 'Light',   count: '20',  desc: 'Sparse, slow, docile' },
+		{ id: 'medium', label: 'Medium',  count: '60',  desc: 'Default mix' },
+		{ id: 'heavy',  label: 'Heavy',   count: '120', desc: 'Dense, some aggressive' },
+		{ id: 'chaos',  label: 'Chaos',   count: '180', desc: 'V2X stress test' },
 	];
 
 	async function apply(preset: TrafficPreset) {
@@ -36,11 +36,8 @@
 	}
 
 	// Count traffic visible in telemetry (actors the player can see)
-	let visibleVehicles = $derived(
+	let visibleTraffic = $derived(
 		($telemetry.nearby_actors ?? []).filter(a => a.type === 'traffic').length
-	);
-	let visiblePedestrians = $derived(
-		($telemetry.nearby_actors ?? []).filter(a => a.type === 'pedestrian').length
 	);
 </script>
 
@@ -77,16 +74,11 @@
 
 	<!-- Status footer -->
 	<div class="px-2.5 py-2 border-t border-gray-700 flex items-center justify-between">
-		<span class="text-[10px] text-gray-500 flex gap-2">
-			{#if visibleVehicles > 0 || visiblePedestrians > 0}
-				{#if visibleVehicles > 0}
-					<span><span class="text-amber-400 font-mono">{visibleVehicles}</span> cars</span>
-				{/if}
-				{#if visiblePedestrians > 0}
-					<span><span class="text-green-400 font-mono">{visiblePedestrians}</span> peds</span>
-				{/if}
+		<span class="text-[10px] text-gray-500">
+			{#if visibleTraffic > 0}
+				<span class="text-amber-400 font-mono">{visibleTraffic}</span> nearby
 			{:else}
-				<span>No traffic visible</span>
+				No traffic visible
 			{/if}
 		</span>
 		{#if lastResult}

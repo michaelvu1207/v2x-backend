@@ -98,16 +98,11 @@
 				type: 'circle',
 				source: 'nearby-actors',
 				paint: {
-					'circle-radius': [
-						'match', ['get', 'type'],
-						'pedestrian', 3,
-						4,
-					],
+					'circle-radius': 4,
 					'circle-color': [
 						'match', ['get', 'type'],
-						'traffic', '#f59e0b',     // amber for NPC vehicles
-						'pedestrian', '#22c55e',  // green for pedestrians
-						'#94a3b8',                // gray for other vehicles
+						'traffic', '#f59e0b',  // amber for NPC traffic
+						'#94a3b8',             // gray for other vehicles
 					],
 					'circle-stroke-width': 1,
 					'circle-stroke-color': '#1f2937',
