@@ -82,6 +82,46 @@
 	let showWeatherPanel = $state(false);
 	let showTrafficPanel = $state(false);
 	let showCameraPanel = $state(false);
+
+	// Split-panel width for the right-side map (px). Persisted in localStorage.
+	const MAP_WIDTH_MIN = 260;
+	const MAP_WIDTH_MAX = 900;
+	const MAP_WIDTH_STORAGE_KEY = 'drive-map-panel-width';
+	function loadStoredMapWidth(): number | null {
+		if (typeof localStorage === 'undefined') return null;
+		const raw = localStorage.getItem(MAP_WIDTH_STORAGE_KEY);
+		const n = raw ? parseInt(raw, 10) : NaN;
+		return Number.isFinite(n) ? n : null;
+	}
+	let mapPanelWidth = $state<number>(loadStoredMapWidth() ?? 500);
+	let dragging = $state(false);
+
+	function clampMapWidth(w: number): number {
+		const max = typeof window !== 'undefined'
+			? Math.min(MAP_WIDTH_MAX, Math.floor(window.innerWidth * 0.75))
+			: MAP_WIDTH_MAX;
+		return Math.max(MAP_WIDTH_MIN, Math.min(max, w));
+	}
+
+	function handleDividerDown(e: PointerEvent) {
+		e.preventDefault();
+		dragging = true;
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
+		const move = (ev: PointerEvent) => {
+			mapPanelWidth = clampMapWidth(window.innerWidth - ev.clientX);
+		};
+		const up = () => {
+			dragging = false;
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+			window.removeEventListener('pointermove', move);
+			window.removeEventListener('pointerup', up);
+			try { localStorage.setItem(MAP_WIDTH_STORAGE_KEY, String(mapPanelWidth)); } catch { /* storage full */ }
+		};
+		window.addEventListener('pointermove', move);
+		window.addEventListener('pointerup', up);
+	}
 	let mapData = $state<MapDataResponse | null>(null);
 	let numZones = $derived($v2xZones.length);
 
@@ -643,9 +683,27 @@
 				{/if}
 			</div>
 
-			<!-- Right: Full map panel -->
+			<!-- Draggable divider -->
 			{#if mapData}
-				<div class="w-[35%] min-w-[300px] max-w-[500px] border-l border-gray-800 bg-gray-950">
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="relative w-1 flex-shrink-0 bg-gray-800 hover:bg-cyan-500/60 {dragging ? 'bg-cyan-500' : ''} cursor-col-resize transition-colors group"
+					onpointerdown={handleDividerDown}
+					title="Drag to resize"
+				>
+					<!-- Wider invisible hit area for easier grabbing -->
+					<div class="absolute inset-y-0 -left-1.5 -right-1.5"></div>
+					<!-- Visible grip dots -->
+					<div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-1 opacity-40 group-hover:opacity-100 transition-opacity pointer-events-none">
+						<span class="block w-0.5 h-0.5 rounded-full bg-white"></span>
+						<span class="block w-0.5 h-0.5 rounded-full bg-white"></span>
+						<span class="block w-0.5 h-0.5 rounded-full bg-white"></span>
+						<span class="block w-0.5 h-0.5 rounded-full bg-white"></span>
+					</div>
+				</div>
+
+				<!-- Right: Full map panel -->
+				<div class="flex-shrink-0 bg-gray-950" style="width: {mapPanelWidth}px;">
 					<DriveMiniMap
 						roadLines={mapData.road_network}
 						originLat={mapData.geo_ref.origin_lat}

@@ -29,7 +29,7 @@
 		{ label: 'Wide',  value: 110 },
 	];
 
-	let activeAspect = $state<string>('widescreen');
+	let activeAspect = $state<string>('square');
 	let activeFov = $state<number>(90);
 	let busy = $state(false);
 

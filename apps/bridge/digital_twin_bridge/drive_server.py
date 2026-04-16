@@ -223,8 +223,9 @@ class DriveSession:
         self._accepting_frames = False  # Guard against callbacks after stop
         self._placed_objects: list = []  # User-placed objects (actor, blueprint_id, pos)
         # Camera stream config — survives set_camera_settings respawns.
-        self._camera_width = 960
-        self._camera_height = 540
+        # Default to 1:1 square to match the drive UI's split layout.
+        self._camera_width = 720
+        self._camera_height = 720
         self._camera_fov = 90.0
 
     async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
