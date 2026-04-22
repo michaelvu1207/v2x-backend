@@ -30,30 +30,38 @@ export const rawAxes = writable<number[]>([]);
 export const rawButtons = writable<boolean[]>([]);
 
 // ── Calibration (persisted) ──
-//
-// Defaults in DEFAULT_CALIBRATION work for the Logitech G923 out of the box.
-// localStorage only stores axis/button remappings when the wizard is used to
-// override defaults for different hardware.
 
-const STORAGE_KEY = 'drive_calibration_v5';
+const STORAGE_KEY = 'drive_calibration_v4';
+
+// Whether the user has completed calibration (wizard or previously saved).
+let _hasStoredCalibration = false;
 
 function loadCalibration(): GamepadCalibration {
 	if (typeof localStorage === 'undefined') return DEFAULT_CALIBRATION;
+	// Clean up legacy keys
+	localStorage.removeItem('drive_calibration');
+	localStorage.removeItem('drive_calibration_v2');
+	localStorage.removeItem('drive_calibration_v3');
+
 	const saved = localStorage.getItem(STORAGE_KEY);
-	if (!saved) return DEFAULT_CALIBRATION;
-	try {
-		const axes = JSON.parse(saved);
-		return {
-			...DEFAULT_CALIBRATION,
-			steerAxis: axes.steerAxis ?? DEFAULT_CALIBRATION.steerAxis,
-			gasAxis: axes.gasAxis ?? DEFAULT_CALIBRATION.gasAxis,
-			brakeAxis: axes.brakeAxis ?? DEFAULT_CALIBRATION.brakeAxis,
-			reverseButton: axes.reverseButton ?? DEFAULT_CALIBRATION.reverseButton,
-		};
-	} catch {
-		return DEFAULT_CALIBRATION;
+	if (saved) {
+		try {
+			const axes = JSON.parse(saved);
+			_hasStoredCalibration = true;
+			return {
+				...DEFAULT_CALIBRATION,
+				steerAxis: axes.steerAxis ?? DEFAULT_CALIBRATION.steerAxis,
+				gasAxis: axes.gasAxis ?? DEFAULT_CALIBRATION.gasAxis,
+				brakeAxis: axes.brakeAxis ?? DEFAULT_CALIBRATION.brakeAxis,
+			};
+		} catch {
+			return DEFAULT_CALIBRATION;
+		}
 	}
+	return DEFAULT_CALIBRATION;
 }
+
+export const calibrated = writable<boolean>(_hasStoredCalibration);
 
 export const calibration = writable<GamepadCalibration>(loadCalibration());
 
@@ -63,7 +71,6 @@ calibration.subscribe((cal) => {
 			steerAxis: cal.steerAxis,
 			gasAxis: cal.gasAxis,
 			brakeAxis: cal.brakeAxis,
-			reverseButton: cal.reverseButton,
 		}));
 	}
 });
@@ -81,23 +88,6 @@ let gas: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: fals
 let brake: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: false };
 let framesPolled = 0;
 
-// ── Reverse Gear State ──
-//
-// Mirrors the CARLA manual_control_steeringwheel.py pattern: a dedicated
-// wheel button toggles reverse on rising-edge. Each poll we compare the
-// current pressed state of the calibrated reverseButton to the previous
-// frame; a false→true transition flips `reverseState`.
-export const reverseState = writable<boolean>(false);
-let prevReverseButtonPressed = false;
-
-export function toggleReverse(): void {
-	reverseState.update((r) => !r);
-}
-
-export function setReverse(value: boolean): void {
-	reverseState.set(value);
-}
-
 const SWEEP_THRESHOLD = 1.0;   // min-max range that confirms a full press+release
 const FALLBACK_FRAMES = 120;   // ~2s: if no sweep seen, snapshot current value
 
@@ -105,12 +95,10 @@ function resetDetection(): void {
 	gas = { min: Infinity, max: -Infinity, rest: 0, detected: false };
 	brake = { min: Infinity, max: -Infinity, rest: 0, detected: false };
 	framesPolled = 0;
-	prevReverseButtonPressed = false;
-	reverseState.set(false);
 }
 
 function isAtExtreme(value: number): boolean {
-	return Math.abs(value) > 0.85;
+	return Math.abs(value) > 0.85 || Math.abs(value) < 0.15;
 }
 
 function updateTracker(tracker: PedalTracker, raw: number, frames: number): void {
@@ -147,22 +135,26 @@ export interface NormalizedInput {
 
 /**
  * Normalize a pedal axis to 0 (released) → 1 (pressed).
- * Rest is auto-detected at runtime and is always at an axis extreme (±1).
+ * Uses the detected rest value to determine direction.
  */
 function normalizePedal(raw: number, rest: number): number {
-	if (rest > 0) {
-		// Rest at +1 → pressed goes toward -1
+	if (Math.abs(rest) < 0.3) {
+		// Rest near 0 → range is 0..1
+		return Math.max(0, Math.min(1, raw));
+	} else if (rest > 0.5) {
+		// Rest near +1 → pressed goes toward -1
 		return Math.max(0, Math.min(1, (1 - raw) / 2));
+	} else {
+		// Rest near -1 → pressed goes toward +1
+		return Math.max(0, Math.min(1, (raw + 1) / 2));
 	}
-	// Rest at -1 → pressed goes toward +1
-	return Math.max(0, Math.min(1, (raw + 1) / 2));
 }
 
 export const normalizedInput = derived(
-	[rawAxes, calibration, reverseState],
-	([$rawAxes, $cal, $reverse]): NormalizedInput => {
+	[rawAxes, calibration],
+	([$rawAxes, $cal]): NormalizedInput => {
 		if ($rawAxes.length === 0 || !gas.detected) {
-			return { steer: 0, throttle: 0, brake: 0, reverse: $reverse };
+			return { steer: 0, throttle: 0, brake: 0, reverse: false };
 		}
 
 		// Steering (always works — no rest ambiguity)
@@ -180,7 +172,7 @@ export const normalizedInput = derived(
 		if (throttle < GAMEPAD_DEADZONE) throttle = 0;
 		if (brakeVal < GAMEPAD_DEADZONE) brakeVal = 0;
 
-		return { steer, throttle, brake: brakeVal, reverse: $reverse };
+		return { steer, throttle, brake: brakeVal, reverse: false };
 	}
 );
 
@@ -199,26 +191,21 @@ function poll() {
 	rawAxes.set([...gp.axes]);
 	rawButtons.set(gp.buttons.map((b) => b.pressed));
 
-	// Reverse-gear toggle: rising-edge on calibrated button flips state.
-	// Mirrors CARLA's manual_control_steeringwheel.py where the reverse
-	// button sets gear = 1 if currently in reverse else -1.
-	const cal = get(calibration);
-	const revIdx = cal.reverseButton;
-	if (revIdx >= 0 && revIdx < gp.buttons.length) {
-		const pressed = gp.buttons[revIdx].pressed;
-		if (pressed && !prevReverseButtonPressed) {
-			reverseState.update((r) => !r);
-		}
-		prevReverseButtonPressed = pressed;
-	} else {
-		prevReverseButtonPressed = false;
-	}
-
 	// Update pedal detection
 	if (!gas.detected || !brake.detected) {
 		framesPolled++;
+		const cal = get(calibration);
+		const gasWas = gas.detected;
+		const brakeWas = brake.detected;
 		updateTracker(gas, gp.axes[cal.gasAxis] ?? 0, framesPolled);
 		updateTracker(brake, gp.axes[cal.brakeAxis] ?? 0, framesPolled);
+
+		if (gas.detected && !gasWas) {
+			console.log(`[Gamepad] Gas rest detected: ${gas.rest.toFixed(3)} (after ${framesPolled} frames)`);
+		}
+		if (brake.detected && !brakeWas) {
+			console.log(`[Gamepad] Brake rest detected: ${brake.rest.toFixed(3)} (after ${framesPolled} frames)`);
+		}
 	}
 
 	animFrameId = requestAnimationFrame(poll);
@@ -259,6 +246,7 @@ export function stopPolling(): void {
  * reassigns axes. User should have feet off pedals.
  */
 export function recalibrateRestValues(): void {
+	calibrated.set(true);
 	resetDetection();
 }
 

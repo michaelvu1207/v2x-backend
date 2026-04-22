@@ -100,8 +100,8 @@ export interface GamepadCalibration {
 	gasAxis: number;
 	brakeAxis: number;
 	steerInverted: boolean;
-	// Button index that toggles reverse gear. -1 = unassigned.
-	reverseButton: number;
+	gasInverted: boolean;
+	brakeInverted: boolean;
 }
 
 export interface VehicleOption {
