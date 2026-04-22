@@ -5,8 +5,8 @@
 
 	import {
 		gamepadConnected,
-		calibrated,
 		normalizedInput,
+		rawButtons,
 		startPolling,
 		stopPolling,
 	} from '$lib/stores/gamepad';
@@ -36,6 +36,7 @@
 		switchCamera,
 		endSession,
 		respawnVehicle,
+		changeVehicle,
 		requestVehicles,
 		requestObjects,
 		requestScenarios,
@@ -66,6 +67,7 @@
 	type InputMode = 'wheel' | 'keyboard';
 
 	let showCalibration = $state(false);
+	let showVehiclePicker = $state(false);
 	let activeCamera = $state<CameraView>('chase');
 	let controlLoopId = $state<number | null>(null);
 	let inputMode = $state<InputMode>('keyboard');
@@ -155,8 +157,6 @@
 	let state = $derived($sessionState);
 	let currentTelemetry = $derived($telemetry);
 	let gamepad = $derived($gamepadConnected);
-	let isCalibrated = $derived($calibrated);
-	let wheelReady = $derived(inputMode === 'keyboard' || isCalibrated);
 	let error = $derived($lastError);
 
 	$effect(() => {
@@ -265,6 +265,31 @@
 		);
 	});
 
+	// Wheel-button shortcuts: square (1) opens calibration, triangle (3)
+	// opens the vehicle picker mid-session.
+	const BTN_SQUARE = 1;
+	const BTN_TRIANGLE = 3;
+	let prevButtons: boolean[] = [];
+	$effect(() => {
+		const buttons = $rawButtons;
+		const risingEdge = (idx: number) => buttons[idx] && !prevButtons[idx];
+
+		if (risingEdge(BTN_SQUARE)) {
+			showCalibration = true;
+		}
+		if (risingEdge(BTN_TRIANGLE) && $sessionState === 'driving') {
+			showVehiclePicker = true;
+		}
+
+		prevButtons = buttons;
+	});
+
+	function applyVehicleChange(id: string) {
+		selectedVehicle = id;
+		changeVehicle(id);
+		showVehiclePicker = false;
+	}
+
 	// Sync V2X zones to bridge for 3D outline rendering (redraw every 5s)
 	let zoneSyncInterval: ReturnType<typeof setInterval> | null = null;
 	$effect(() => {
@@ -364,6 +389,57 @@
 	<CalibrationWizard onComplete={handleCalibrationComplete} />
 {/if}
 
+{#if showVehiclePicker}
+	<div class="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50"
+		onclick={() => showVehiclePicker = false}
+		onkeydown={(e) => e.key === 'Escape' && (showVehiclePicker = false)}
+		role="dialog"
+		tabindex="-1"
+	>
+		<div class="relative bg-gray-900/80 backdrop-blur-xl rounded-2xl p-8 max-w-md w-full mx-4 border border-gray-800/60 shadow-2xl shadow-black/50"
+			onclick={(e) => e.stopPropagation()}
+			role="document"
+		>
+			<div class="mb-6">
+				<h2 class="font-display text-xl font-bold text-white tracking-widest uppercase">Change Vehicle</h2>
+				<div class="mt-1.5 w-10 h-0.5 bg-accent rounded-full"></div>
+			</div>
+
+			{#if vehicles.length > 0}
+				<div class="relative mb-6">
+					<select
+						bind:value={selectedVehicle}
+						class="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-white focus:outline-none focus:border-accent/50 focus:shadow-[0_0_10px_rgba(220,38,38,0.1)] appearance-none cursor-pointer transition-all duration-200"
+					>
+						{#each vehicles as v}
+							<option value={v.id}>
+								{v.name}{v.wheels === 2 ? ' (bike)' : ''}
+							</option>
+						{/each}
+					</select>
+					<svg class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+						<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+					</svg>
+				</div>
+
+				<button onclick={() => applyVehicleChange(selectedVehicle)}
+					class="w-full py-3 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
+					Apply
+				</button>
+				<button onclick={() => showVehiclePicker = false}
+					class="mt-2 w-full py-2.5 text-xs font-body text-gray-600 hover:text-gray-400 tracking-widest uppercase transition-colors cursor-pointer">
+					Cancel
+				</button>
+			{:else}
+				<div class="px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-gray-600 text-center">
+					<span class="inline-block w-3 h-3 border border-gray-600 border-t-transparent rounded-full animate-spin mr-2 align-middle"></span>
+					Loading vehicles...
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}
+
 <div class="h-screen w-screen bg-black relative overflow-hidden">
 	{#if state === 'idle' || state === 'connecting'}
 		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
@@ -422,16 +498,6 @@
 									<circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" /><path d="M12 3v6M12 15v6M3 12h6M15 12h6" />
 								</svg>
 								WHEEL {gamepad ? '' : '(N/A)'}
-								{#if inputMode === 'wheel' && gamepad}
-									<button onclick={(e) => { e.stopPropagation(); showCalibration = true; }}
-										class="absolute -top-1 -right-1 w-5 h-5 bg-gray-700 hover:bg-gray-600 rounded-full flex items-center justify-center cursor-pointer transition-colors"
-										title="Calibrate">
-										<svg class="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-											<path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-											<path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-										</svg>
-									</button>
-								{/if}
 							</button>
 						</div>
 					</div>
@@ -532,16 +598,14 @@
 					</div>
 
 					<!-- Action button -->
-					{#if inputMode === 'wheel' && !isCalibrated}
+					<button onclick={handleQuickStart}
+						class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
+						Start Driving
+					</button>
+					{#if inputMode === 'wheel' && gamepad}
 						<button onclick={() => showCalibration = true}
-							class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
+							class="mt-2 w-full py-3 bg-gray-800/60 hover:bg-gray-700/80 border border-gray-700/60 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-gray-300 hover:text-white transition-all duration-200 cursor-pointer">
 							Calibrate Wheel
-						</button>
-						<p class="mt-2 text-[10px] font-body text-yellow-500/80 tracking-wider">CALIBRATION REQUIRED BEFORE DRIVING</p>
-					{:else}
-						<button onclick={handleQuickStart}
-							class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
-							Start Driving
 						</button>
 					{/if}
 
@@ -562,15 +626,10 @@
 									</div>
 								{/each}
 							</div>
-						{:else if gamepad && isCalibrated}
-							<div class="flex items-center justify-center gap-2">
-								<div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.5)]"></div>
-								<span class="text-xs font-body text-green-400/80 tracking-wider">WHEEL CALIBRATED — READY</span>
-							</div>
 						{:else if gamepad}
 							<div class="flex items-center justify-center gap-2">
-								<div class="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
-								<span class="text-xs font-body text-yellow-500/80 tracking-wider">CALIBRATE WHEEL TO CONTINUE</span>
+								<div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.5)]"></div>
+								<span class="text-xs font-body text-green-400/80 tracking-wider">WHEEL READY</span>
 							</div>
 						{:else}
 							<div class="flex items-center justify-center gap-2">
@@ -623,12 +682,6 @@
 					<span class="px-1.5 py-0.5 bg-black/50 rounded text-[10px] text-gray-300">
 						{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 					</span>
-					{#if inputMode === 'wheel' && gamepad}
-						<button onclick={() => showCalibration = true}
-							class="px-1.5 py-0.5 bg-black/50 hover:bg-black/70 rounded text-[10px] text-gray-400 hover:text-white transition-colors">
-							Cal
-						</button>
-					{/if}
 					<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
 				</div>
 

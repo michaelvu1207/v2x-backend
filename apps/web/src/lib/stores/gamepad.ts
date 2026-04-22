@@ -30,40 +30,30 @@ export const rawAxes = writable<number[]>([]);
 export const rawButtons = writable<boolean[]>([]);
 
 // ── Calibration (persisted) ──
+//
+// Defaults in DEFAULT_CALIBRATION work for the Logitech G923 out of the box.
+// localStorage only stores axis/button remappings when the wizard is used to
+// override defaults for different hardware.
 
 const STORAGE_KEY = 'drive_calibration_v5';
 
-// Whether the user has completed calibration (wizard or previously saved).
-let _hasStoredCalibration = false;
-
 function loadCalibration(): GamepadCalibration {
 	if (typeof localStorage === 'undefined') return DEFAULT_CALIBRATION;
-	// Clean up legacy keys
-	localStorage.removeItem('drive_calibration');
-	localStorage.removeItem('drive_calibration_v2');
-	localStorage.removeItem('drive_calibration_v3');
-	localStorage.removeItem('drive_calibration_v4');
-
 	const saved = localStorage.getItem(STORAGE_KEY);
-	if (saved) {
-		try {
-			const axes = JSON.parse(saved);
-			_hasStoredCalibration = true;
-			return {
-				...DEFAULT_CALIBRATION,
-				steerAxis: axes.steerAxis ?? DEFAULT_CALIBRATION.steerAxis,
-				gasAxis: axes.gasAxis ?? DEFAULT_CALIBRATION.gasAxis,
-				brakeAxis: axes.brakeAxis ?? DEFAULT_CALIBRATION.brakeAxis,
-				reverseButton: axes.reverseButton ?? DEFAULT_CALIBRATION.reverseButton,
-			};
-		} catch {
-			return DEFAULT_CALIBRATION;
-		}
+	if (!saved) return DEFAULT_CALIBRATION;
+	try {
+		const axes = JSON.parse(saved);
+		return {
+			...DEFAULT_CALIBRATION,
+			steerAxis: axes.steerAxis ?? DEFAULT_CALIBRATION.steerAxis,
+			gasAxis: axes.gasAxis ?? DEFAULT_CALIBRATION.gasAxis,
+			brakeAxis: axes.brakeAxis ?? DEFAULT_CALIBRATION.brakeAxis,
+			reverseButton: axes.reverseButton ?? DEFAULT_CALIBRATION.reverseButton,
+		};
+	} catch {
+		return DEFAULT_CALIBRATION;
 	}
-	return DEFAULT_CALIBRATION;
 }
-
-export const calibrated = writable<boolean>(_hasStoredCalibration);
 
 export const calibration = writable<GamepadCalibration>(loadCalibration());
 
@@ -120,7 +110,7 @@ function resetDetection(): void {
 }
 
 function isAtExtreme(value: number): boolean {
-	return Math.abs(value) > 0.85 || Math.abs(value) < 0.15;
+	return Math.abs(value) > 0.85;
 }
 
 function updateTracker(tracker: PedalTracker, raw: number, frames: number): void {
@@ -157,19 +147,15 @@ export interface NormalizedInput {
 
 /**
  * Normalize a pedal axis to 0 (released) → 1 (pressed).
- * Uses the detected rest value to determine direction.
+ * Rest is auto-detected at runtime and is always at an axis extreme (±1).
  */
 function normalizePedal(raw: number, rest: number): number {
-	if (Math.abs(rest) < 0.3) {
-		// Rest near 0 → range is 0..1
-		return Math.max(0, Math.min(1, raw));
-	} else if (rest > 0.5) {
-		// Rest near +1 → pressed goes toward -1
+	if (rest > 0) {
+		// Rest at +1 → pressed goes toward -1
 		return Math.max(0, Math.min(1, (1 - raw) / 2));
-	} else {
-		// Rest near -1 → pressed goes toward +1
-		return Math.max(0, Math.min(1, (raw + 1) / 2));
 	}
+	// Rest at -1 → pressed goes toward +1
+	return Math.max(0, Math.min(1, (raw + 1) / 2));
 }
 
 export const normalizedInput = derived(
@@ -231,17 +217,8 @@ function poll() {
 	// Update pedal detection
 	if (!gas.detected || !brake.detected) {
 		framesPolled++;
-		const gasWas = gas.detected;
-		const brakeWas = brake.detected;
 		updateTracker(gas, gp.axes[cal.gasAxis] ?? 0, framesPolled);
 		updateTracker(brake, gp.axes[cal.brakeAxis] ?? 0, framesPolled);
-
-		if (gas.detected && !gasWas) {
-			console.log(`[Gamepad] Gas rest detected: ${gas.rest.toFixed(3)} (after ${framesPolled} frames)`);
-		}
-		if (brake.detected && !brakeWas) {
-			console.log(`[Gamepad] Brake rest detected: ${brake.rest.toFixed(3)} (after ${framesPolled} frames)`);
-		}
 	}
 
 	animFrameId = requestAnimationFrame(poll);
@@ -282,7 +259,6 @@ export function stopPolling(): void {
  * reassigns axes. User should have feet off pedals.
  */
 export function recalibrateRestValues(): void {
-	calibrated.set(true);
 	resetDetection();
 }
 
