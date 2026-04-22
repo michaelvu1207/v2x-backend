@@ -44,7 +44,7 @@
 </script>
 
 <svelte:head>
-	<title>v2x-backend Dashboard</title>
+	<title>V2X Cyber-Physical System Dashboard</title>
 </svelte:head>
 
 <DashboardLayout>

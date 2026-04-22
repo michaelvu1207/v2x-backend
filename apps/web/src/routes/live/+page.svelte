@@ -12,7 +12,7 @@
 </script>
 
 <svelte:head>
-	<title>v2x-backend Street View</title>
+	<title>V2X Cyber-Physical System Street View</title>
 </svelte:head>
 
 <div class="flex h-screen flex-col overflow-hidden bg-gray-950">

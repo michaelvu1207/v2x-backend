@@ -46,7 +46,7 @@
 </script>
 
 <svelte:head>
-	<title>v2x-backend Demo Videos</title>
+	<title>V2X Cyber-Physical System Demo Videos</title>
 </svelte:head>
 
 <div class="flex h-screen flex-col overflow-hidden bg-gray-950">

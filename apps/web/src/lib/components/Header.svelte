@@ -40,7 +40,7 @@
 		<div class="flex items-center gap-3">
 			<img src="/logo.png" alt="V2X logo" class="h-8" />
 			<div>
-				<h1 class="text-sm font-semibold text-white">v2x-backend</h1>
+				<h1 class="text-sm font-semibold text-white">V2X Cyber-Physical System</h1>
 				<p class="text-[10px] text-gray-500">Digital twin monitoring dashboard</p>
 			</div>
 		</div>

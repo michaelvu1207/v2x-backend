@@ -40,7 +40,7 @@
 </script>
 
 <svelte:head>
-	<title>v2x-backend Objects DB</title>
+	<title>V2X Cyber-Physical System Objects DB</title>
 </svelte:head>
 
 <div class="flex h-screen flex-col overflow-hidden bg-gray-950">
