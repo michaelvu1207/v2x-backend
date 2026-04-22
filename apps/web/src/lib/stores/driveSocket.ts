@@ -141,6 +141,10 @@ function handleServerMessage(msg: DriveMessage): void {
 			vehicleId.set(null);
 			break;
 
+		case 'vehicle_changed':
+			vehicleId.set(msg.vehicle_id as number);
+			break;
+
 		case 'vehicle_list':
 			vehicleList.set((msg.vehicles as VehicleOption[]) ?? []);
 			break;
@@ -250,6 +254,10 @@ export function switchCamera(view: CameraView): void {
 
 export function respawnVehicle(): void {
 	send({ type: 'respawn' });
+}
+
+export function changeVehicle(vehicle: string): void {
+	send({ type: 'change_vehicle', vehicle });
 }
 
 export function requestObjects(): void {

@@ -3,7 +3,9 @@
 ## Repo Layout
 
 - `apps/bridge`: Python CARLA bridge (drive server + observation mode).
-- `apps/web`: SvelteKit digital twin dashboard.
+- `apps/web`: SvelteKit digital twin dashboard. See `apps/web/AGENTS.md` for
+  driving-input internals (wheel/pedal gamepad calibration, keyboard fallback,
+  WebSocket control transport).
 - `scripts/`: Operational launch scripts for the GPU server.
 - `infra/aws-cli`: AWS CLI scripts for IoT Core, Lambda, DynamoDB, API Gateway, S3, KVS.
 - `infra/amplify`: Deploy the web dashboard to Amplify Hosting.
