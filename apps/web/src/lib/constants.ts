@@ -62,6 +62,9 @@ export const DEFAULT_CALIBRATION = {
 	steerInverted: false,
 	gasInverted: false,
 	brakeInverted: false,
+	// Confirmed at runtime on this G923 setup: right shift paddle = button 2.
+	// (Indices are hardware/OS/browser dependent — reassignable via wizard.)
+	reverseButton: 2,
 };
 
 export const CAMERA_VIEWS = [
