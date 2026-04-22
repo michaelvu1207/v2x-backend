@@ -31,7 +31,7 @@ export const rawButtons = writable<boolean[]>([]);
 
 // ── Calibration (persisted) ──
 
-const STORAGE_KEY = 'drive_calibration_v4';
+const STORAGE_KEY = 'drive_calibration_v5';
 
 // Whether the user has completed calibration (wizard or previously saved).
 let _hasStoredCalibration = false;
@@ -42,6 +42,7 @@ function loadCalibration(): GamepadCalibration {
 	localStorage.removeItem('drive_calibration');
 	localStorage.removeItem('drive_calibration_v2');
 	localStorage.removeItem('drive_calibration_v3');
+	localStorage.removeItem('drive_calibration_v4');
 
 	const saved = localStorage.getItem(STORAGE_KEY);
 	if (saved) {
@@ -53,6 +54,7 @@ function loadCalibration(): GamepadCalibration {
 				steerAxis: axes.steerAxis ?? DEFAULT_CALIBRATION.steerAxis,
 				gasAxis: axes.gasAxis ?? DEFAULT_CALIBRATION.gasAxis,
 				brakeAxis: axes.brakeAxis ?? DEFAULT_CALIBRATION.brakeAxis,
+				reverseButton: axes.reverseButton ?? DEFAULT_CALIBRATION.reverseButton,
 			};
 		} catch {
 			return DEFAULT_CALIBRATION;
@@ -71,6 +73,7 @@ calibration.subscribe((cal) => {
 			steerAxis: cal.steerAxis,
 			gasAxis: cal.gasAxis,
 			brakeAxis: cal.brakeAxis,
+			reverseButton: cal.reverseButton,
 		}));
 	}
 });
@@ -88,6 +91,23 @@ let gas: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: fals
 let brake: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: false };
 let framesPolled = 0;
 
+// ── Reverse Gear State ──
+//
+// Mirrors the CARLA manual_control_steeringwheel.py pattern: a dedicated
+// wheel button toggles reverse on rising-edge. Each poll we compare the
+// current pressed state of the calibrated reverseButton to the previous
+// frame; a false→true transition flips `reverseState`.
+export const reverseState = writable<boolean>(false);
+let prevReverseButtonPressed = false;
+
+export function toggleReverse(): void {
+	reverseState.update((r) => !r);
+}
+
+export function setReverse(value: boolean): void {
+	reverseState.set(value);
+}
+
 const SWEEP_THRESHOLD = 1.0;   // min-max range that confirms a full press+release
 const FALLBACK_FRAMES = 120;   // ~2s: if no sweep seen, snapshot current value
 
@@ -95,6 +115,8 @@ function resetDetection(): void {
 	gas = { min: Infinity, max: -Infinity, rest: 0, detected: false };
 	brake = { min: Infinity, max: -Infinity, rest: 0, detected: false };
 	framesPolled = 0;
+	prevReverseButtonPressed = false;
+	reverseState.set(false);
 }
 
 function isAtExtreme(value: number): boolean {
@@ -151,10 +173,10 @@ function normalizePedal(raw: number, rest: number): number {
 }
 
 export const normalizedInput = derived(
-	[rawAxes, calibration],
-	([$rawAxes, $cal]): NormalizedInput => {
+	[rawAxes, calibration, reverseState],
+	([$rawAxes, $cal, $reverse]): NormalizedInput => {
 		if ($rawAxes.length === 0 || !gas.detected) {
-			return { steer: 0, throttle: 0, brake: 0, reverse: false };
+			return { steer: 0, throttle: 0, brake: 0, reverse: $reverse };
 		}
 
 		// Steering (always works — no rest ambiguity)
@@ -172,7 +194,7 @@ export const normalizedInput = derived(
 		if (throttle < GAMEPAD_DEADZONE) throttle = 0;
 		if (brakeVal < GAMEPAD_DEADZONE) brakeVal = 0;
 
-		return { steer, throttle, brake: brakeVal, reverse: false };
+		return { steer, throttle, brake: brakeVal, reverse: $reverse };
 	}
 );
 
@@ -191,10 +213,24 @@ function poll() {
 	rawAxes.set([...gp.axes]);
 	rawButtons.set(gp.buttons.map((b) => b.pressed));
 
+	// Reverse-gear toggle: rising-edge on calibrated button flips state.
+	// Mirrors CARLA's manual_control_steeringwheel.py where the reverse
+	// button sets gear = 1 if currently in reverse else -1.
+	const cal = get(calibration);
+	const revIdx = cal.reverseButton;
+	if (revIdx >= 0 && revIdx < gp.buttons.length) {
+		const pressed = gp.buttons[revIdx].pressed;
+		if (pressed && !prevReverseButtonPressed) {
+			reverseState.update((r) => !r);
+		}
+		prevReverseButtonPressed = pressed;
+	} else {
+		prevReverseButtonPressed = false;
+	}
+
 	// Update pedal detection
 	if (!gas.detected || !brake.detected) {
 		framesPolled++;
-		const cal = get(calibration);
 		const gasWas = gas.detected;
 		const brakeWas = brake.detected;
 		updateTracker(gas, gp.axes[cal.gasAxis] ?? 0, framesPolled);
