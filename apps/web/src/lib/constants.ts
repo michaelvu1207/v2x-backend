@@ -54,15 +54,14 @@ export const GAMEPAD_POLL_RATE = 60;
 
 // Logitech G923 (046d:c266) — 10 axes, 25 buttons
 // Axis 0 = steering, Axis 1 = brake, Axis 2 = gas, Axis 3 = clutch
-// Button 2 = right shift paddle (reverse).
-// Pedal rest position is auto-detected at runtime.
-// Wizard is only needed for hardware that doesn't match this layout.
+// Pedal range varies by OS — auto-detect at runtime
 export const DEFAULT_CALIBRATION = {
 	steerAxis: 0,
 	gasAxis: 2,
 	brakeAxis: 1,
 	steerInverted: false,
-	reverseButton: 2,
+	gasInverted: false,
+	brakeInverted: false,
 };
 
 export const CAMERA_VIEWS = [
