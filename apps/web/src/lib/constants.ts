@@ -39,7 +39,7 @@ export const DRIVE_TUNNELS = [
 	{
 		id: 'cloudflare',
 		label: 'Cloudflare',
-		url: 'wss://monster-area-neon-road.trycloudflare.com',
+		url: 'wss://morning-alaska-subaru-chart.trycloudflare.com',
 	},
 ] as const;
 
