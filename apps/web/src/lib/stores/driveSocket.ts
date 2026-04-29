@@ -6,7 +6,7 @@
  */
 
 import { writable, get } from 'svelte/store';
-import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert, V2xZone } from '$lib/types';
+import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert, V2xZone, TrajectoryInfo, TrajectoryStatus } from '$lib/types';
 import { v2xZones } from './v2xZones';
 
 // ── Stores ──
@@ -40,6 +40,8 @@ export const scenarioList = writable<ScenarioInfo[]>([]);
 export const v2xSignals = writable<V2xSignal[]>([]);
 export const v2xSignalCount = writable<number>(0);
 export const v2xAlerts = writable<V2xAlert[]>([]);
+export const trajectoryList = writable<TrajectoryInfo[]>([]);
+export const trajectoryStatus = writable<TrajectoryStatus>({ active: false });
 
 // ── WebSocket ──
 
@@ -208,6 +210,37 @@ function handleServerMessage(msg: DriveMessage): void {
 			v2xSignals.set((msg.signals as V2xSignal[]) ?? []);
 			break;
 
+		case 'trajectory_list':
+			trajectoryList.set((msg.trajectories as TrajectoryInfo[]) ?? []);
+			if (msg.status) {
+				trajectoryStatus.set(msg.status as TrajectoryStatus);
+			}
+			break;
+
+		case 'trajectory_started':
+			trajectoryStatus.set({
+				active: true,
+				name: msg.name as string,
+				duration: msg.duration as number,
+				vehicle_id: msg.vehicle_id as number,
+				elapsed: 0,
+				finished: false,
+			});
+			break;
+
+		case 'trajectory_stopped':
+			trajectoryStatus.set({ active: false });
+			break;
+
+		case 'trajectory_status':
+			trajectoryStatus.set(msg as unknown as TrajectoryStatus);
+			break;
+
+		case 'trajectory_uploaded':
+			// Refresh list after upload so the new file appears in the dropdown
+			requestTrajectories();
+			break;
+
 		case 'error':
 			lastError.set(msg.message as string);
 			if (get(sessionState) === 'reconstructing') {
@@ -331,5 +364,27 @@ export function despawnTraffic(): void {
 
 export function syncV2xZones(zones: { polygon: [number, number][]; signal_type: string; color: string }[]): void {
 	send({ type: 'sync_v2x_zones', zones });
+}
+
+// ── Trajectory Actions ──
+
+export function requestTrajectories(): void {
+	send({ type: 'list_trajectories' });
+}
+
+export function uploadTrajectory(name: string, data: unknown[]): void {
+	send({ type: 'upload_trajectory', name, data });
+}
+
+export function startTrajectory(file: string, vehicle?: string): void {
+	send({ type: 'start_trajectory', file, vehicle: vehicle ?? 'vehicle.tesla.model3' });
+}
+
+export function stopTrajectory(): void {
+	send({ type: 'stop_trajectory' });
+}
+
+export function requestTrajectoryStatus(): void {
+	send({ type: 'trajectory_status' });
 }
 

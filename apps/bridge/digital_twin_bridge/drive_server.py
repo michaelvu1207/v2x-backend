@@ -21,6 +21,11 @@ from PIL import Image
 
 from digital_twin_bridge.scene_reconstructor import SceneReconstructor
 from digital_twin_bridge.camera_streamer import compute_camera_transform
+from digital_twin_bridge.trajectory_player import (
+    TrajectoryPlayer,
+    list_trajectory_files,
+    save_trajectory_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -209,13 +214,23 @@ class DriveSession:
     Lifecycle: start() -> apply_control() (repeated) -> end()
     """
 
-    def __init__(self, world, carla_map, api_fetcher: Callable, shared_prop_pool: Optional[dict] = None):
+    def __init__(
+        self,
+        world,
+        carla_map,
+        api_fetcher: Callable,
+        shared_prop_pool: Optional[dict] = None,
+        trajectory_player: Optional[TrajectoryPlayer] = None,
+    ):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
         # Shared V2X prop pool across sessions (object_id -> actor_id). Owned by
         # the server process, not the session. None → session-owned props (legacy).
         self._shared_prop_pool = shared_prop_pool
+        # Server-owned trajectory player; one playback shared across all sessions
+        # in the world. None → trajectory feature disabled.
+        self._trajectory_player = trajectory_player
         self._reconstructor: Optional[SceneReconstructor] = None
         self.vehicle = None
         self.active_camera: str = "chase"
@@ -1098,6 +1113,40 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":
             return session.respawn()
+        elif msg_type == "list_trajectories":
+            if session._trajectory_player is None:
+                return {"type": "trajectory_list", "trajectories": []}
+            files = list_trajectory_files()
+            status = session._trajectory_player.status()
+            return {"type": "trajectory_list", "trajectories": files, "status": status}
+        elif msg_type == "upload_trajectory":
+            if session._trajectory_player is None:
+                return {"type": "error", "message": "Trajectory player unavailable"}
+            name = msg.get("name") or "uploaded"
+            data = msg.get("data")
+            if not isinstance(data, list):
+                return {"type": "error", "message": "trajectory 'data' must be a JSON array"}
+            fname = name if name.endswith(".json") else f"{name}.json"
+            save_trajectory_file(fname, data)
+            return {"type": "trajectory_uploaded", "file": fname}
+        elif msg_type == "start_trajectory":
+            if session._trajectory_player is None:
+                return {"type": "error", "message": "Trajectory player unavailable"}
+            file = msg.get("file")
+            if not file:
+                return {"type": "error", "message": "start_trajectory requires 'file'"}
+            vehicle_bp = msg.get("vehicle", DEFAULT_VEHICLE)
+            session._trajectory_player.load_from_file(file)
+            result = session._trajectory_player.start(vehicle_blueprint=vehicle_bp)
+            return {"type": "trajectory_started", **result}
+        elif msg_type == "stop_trajectory":
+            if session._trajectory_player is None:
+                return {"type": "error", "message": "Trajectory player unavailable"}
+            return {"type": "trajectory_stopped", **session._trajectory_player.stop()}
+        elif msg_type == "trajectory_status":
+            if session._trajectory_player is None:
+                return {"type": "trajectory_status", "active": False}
+            return {"type": "trajectory_status", **session._trajectory_player.status()}
         elif msg_type == "end_session":
             return session.end()
         else:
@@ -1111,7 +1160,14 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
 _active_sessions: list[DriveSession] = []
 
 
-async def serve_drive(websocket, world, carla_map, api_fetcher, shared_prop_pool: Optional[dict] = None):
+async def serve_drive(
+    websocket,
+    world,
+    carla_map,
+    api_fetcher,
+    shared_prop_pool: Optional[dict] = None,
+    trajectory_player: Optional[TrajectoryPlayer] = None,
+):
     """
     Handle a single WebSocket connection for driving.
 
@@ -1120,12 +1176,16 @@ async def serve_drive(websocket, world, carla_map, api_fetcher, shared_prop_pool
 
     ``shared_prop_pool`` is an object_id→actor_id map shared across sessions so
     V2X props persist even when an individual session ends.
+
+    ``trajectory_player`` is the server-owned playback singleton; sessions
+    issue start/stop/list commands but never own the player.
     """
     session = DriveSession(
         world=world,
         carla_map=carla_map,
         api_fetcher=api_fetcher,
         shared_prop_pool=shared_prop_pool,
+        trajectory_player=trajectory_player,
     )
     frame_task = None
     frame_stop = asyncio.Event()

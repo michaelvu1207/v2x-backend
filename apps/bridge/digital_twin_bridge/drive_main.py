@@ -32,6 +32,7 @@ import websockets
 from digital_twin_bridge.config import Config
 from digital_twin_bridge.carla_connection import CarlaConnection
 from digital_twin_bridge.drive_server import serve_drive, _active_sessions
+from digital_twin_bridge.trajectory_player import TrajectoryPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -210,17 +211,25 @@ async def main():
 
     health = HealthMonitor()
 
+    # ── Trajectory player (singleton: one playback at a time, shared world) ──
+    trajectory_player = TrajectoryPlayer(world, carla_map)
+
     # ── Drive server setup ──
     api_fetcher = make_api_fetcher(config)
 
     async def handler(websocket):
-        await serve_drive(websocket, world, carla_map, api_fetcher, shared_prop_pool)
+        await serve_drive(
+            websocket, world, carla_map, api_fetcher,
+            shared_prop_pool, trajectory_player,
+        )
 
     async def tick_loop():
         """Advance CARLA physics at 20 Hz.
 
         In sync mode the world does not tick on its own. We wrap the
         blocking tick() in run_in_executor so it doesn't stall asyncio.
+        After each tick, drive the trajectory player one step so its
+        controller stays in lockstep with sim time.
         """
         loop = asyncio.get_running_loop()
         target_dt = 0.05
@@ -232,6 +241,10 @@ async def main():
                 logger.warning("world.tick() failed: %s", e)
                 await asyncio.sleep(target_dt)
                 continue
+            try:
+                trajectory_player.tick()
+            except Exception as e:
+                logger.warning("trajectory_player.tick() failed: %s", e)
             elapsed = loop.time() - start
             await asyncio.sleep(max(0.0, target_dt - elapsed))
 
@@ -244,7 +257,8 @@ async def main():
             try:
                 from digital_twin_bridge.drive_server import _traffic_actor_ids
                 vehicles = [v for v in world.get_actors().filter("vehicle.*")
-                            if v.id not in _traffic_actor_ids]
+                            if v.id not in _traffic_actor_ids
+                            and v.attributes.get("role_name") != "trajectory"]
                 sensors = world.get_actors().filter("sensor.*")
                 # Boot-time V2X props are intentional; only sweep if we find a
                 # runaway count (>2x the tracked snapshot), which indicates
@@ -322,6 +336,12 @@ async def main():
                     task.cancel()
                 except Exception:
                     pass
+
+        # Stop any active trajectory playback (server-owned, not session-owned).
+        try:
+            trajectory_player.stop()
+        except Exception as e:
+            logger.debug("Trajectory stop on shutdown failed: %s", e)
 
         # Destroy shared V2X props (owned by the server, not any session).
         if shared_prop_pool:

@@ -57,6 +57,7 @@
 	import DriveMiniMap from '$lib/components/DriveMiniMap.svelte';
 	import WeatherPanel from '$lib/components/WeatherPanel.svelte';
 	import TrafficPanel from '$lib/components/TrafficPanel.svelte';
+	import TrajectoryPanel from '$lib/components/TrajectoryPanel.svelte';
 	import CameraSettingsPanel from '$lib/components/CameraSettingsPanel.svelte';
 	import { checkZoneProximity, resetZoneProximity, clearZones } from '$lib/stores/v2xZones';
 	import { v2xZones } from '$lib/stores/v2xZones';
@@ -82,6 +83,7 @@
 	let showWeatherPanel = $state(false);
 	let showTrafficPanel = $state(false);
 	let showCameraPanel = $state(false);
+	let showTrajectoryPanel = $state(false);
 
 	// Split-panel width for the right-side map (px). Persisted in localStorage.
 	const MAP_WIDTH_MIN = 260;
@@ -634,23 +636,29 @@
 
 				<!-- Bottom left action buttons -->
 				<div class="absolute bottom-2 left-2 z-20 flex gap-1 pointer-events-auto">
-					<button onclick={() => { showWeatherPanel = !showWeatherPanel; showTrafficPanel = false; showCameraPanel = false; }}
+					<button onclick={() => { showWeatherPanel = !showWeatherPanel; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; }}
 						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showWeatherPanel
 							? 'bg-cyan-600 text-white'
 							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
 						Weather
 					</button>
-					<button onclick={() => { showTrafficPanel = !showTrafficPanel; showWeatherPanel = false; showCameraPanel = false; }}
+					<button onclick={() => { showTrafficPanel = !showTrafficPanel; showWeatherPanel = false; showCameraPanel = false; showTrajectoryPanel = false; }}
 						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showTrafficPanel
 							? 'bg-amber-600 text-white'
 							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
 						Traffic
 					</button>
-					<button onclick={() => { showCameraPanel = !showCameraPanel; showWeatherPanel = false; showTrafficPanel = false; }}
+					<button onclick={() => { showCameraPanel = !showCameraPanel; showWeatherPanel = false; showTrafficPanel = false; showTrajectoryPanel = false; }}
 						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showCameraPanel
 							? 'bg-cyan-600 text-white'
 							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
 						Camera
+					</button>
+					<button onclick={() => { showTrajectoryPanel = !showTrajectoryPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; }}
+						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showTrajectoryPanel
+							? 'bg-blue-600 text-white'
+							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						Trajectory
 					</button>
 					<button onclick={() => respawnVehicle()}
 						class="px-2 py-1 bg-blue-600/70 hover:bg-blue-600 rounded text-[10px] font-medium text-white transition-colors">
@@ -680,6 +688,11 @@
 				<!-- Camera Settings Panel -->
 				{#if showCameraPanel}
 					<CameraSettingsPanel onClose={() => { showCameraPanel = false; }} />
+				{/if}
+
+				<!-- Trajectory Panel -->
+				{#if showTrajectoryPanel}
+					<TrajectoryPanel onClose={() => { showTrajectoryPanel = false; }} />
 				{/if}
 			</div>
 

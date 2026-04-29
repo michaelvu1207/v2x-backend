@@ -157,3 +157,17 @@ export interface DriveMessage {
 	type: string;
 	[key: string]: unknown;
 }
+
+export interface TrajectoryInfo {
+	file: string;
+	samples: number;
+}
+
+export interface TrajectoryStatus {
+	active: boolean;
+	name?: string;
+	elapsed?: number;
+	duration?: number;
+	vehicle_id?: number;
+	finished?: boolean;
+}
