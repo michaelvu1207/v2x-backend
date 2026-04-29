@@ -719,9 +719,13 @@ class DriveSession:
                        if int(bp.get_attribute("number_of_wheels")) == 4]
 
         spawn_points = self._map.get_spawn_points()
+        # Drop spawn points sitting on top of the player, the trajectory
+        # car, or any user/scenario-placed actor. Without this an autopilot
+        # NPC spawns at the same point and physics shoves the placement
+        # off-road — which looks like the placed actor "disappeared".
+        spawn_points = self._filter_spawn_points_near_placed(spawn_points, radius=8.0)
         random.shuffle(spawn_points)
 
-        # Don't spawn at the player's spawn point
         available_spawns = spawn_points[: min(len(spawn_points), target_count)]
 
         spawned = 0
@@ -750,6 +754,57 @@ class DriveSession:
 
         logger.info("Spawned %d traffic vehicles (preset=%s)", spawned, preset)
         return {"type": "traffic_spawned", "preset": preset, "count": spawned}
+
+    def _filter_spawn_points_near_placed(self, spawn_points, radius: float = 8.0):
+        """Return spawn points not within ``radius`` of any protected actor.
+
+        Protected actors: the player vehicle, every entry in
+        ``_placed_objects`` (user spawns + scenario loads), and the
+        trajectory player's car if it's active. Used by ``spawn_traffic``
+        to keep autopilot NPCs from spawning on top of placements.
+        """
+        blocked: list[tuple[float, float]] = []
+
+        if self.vehicle is not None:
+            try:
+                loc = self.vehicle.get_transform().location
+                blocked.append((loc.x, loc.y))
+            except Exception:
+                pass
+
+        for entry in self._placed_objects:
+            actor = entry.get("actor")
+            if actor is not None:
+                try:
+                    loc = actor.get_transform().location
+                    blocked.append((loc.x, loc.y))
+                    continue
+                except Exception:
+                    pass
+            # Fall back to the recorded spawn pos if the actor is gone.
+            pos = entry.get("pos")
+            if pos and len(pos) >= 2:
+                blocked.append((float(pos[0]), float(pos[1])))
+
+        tp = self._trajectory_player
+        if tp is not None and tp.is_active() and tp.vehicle is not None:
+            try:
+                loc = tp.vehicle.get_transform().location
+                blocked.append((loc.x, loc.y))
+            except Exception:
+                pass
+
+        if not blocked:
+            return list(spawn_points)
+
+        r2 = radius * radius
+        safe = []
+        for sp in spawn_points:
+            sx, sy = sp.location.x, sp.location.y
+            if any((sx - bx) * (sx - bx) + (sy - by) * (sy - by) < r2 for bx, by in blocked):
+                continue
+            safe.append(sp)
+        return safe
 
     def despawn_traffic(self) -> dict:
         """Remove all traffic vehicles spawned by spawn_traffic."""
