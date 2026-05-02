@@ -37,6 +37,10 @@ const THROTTLE_RAMP = 6.0;
 let currentForwardThrottle = 0;
 let currentReverseThrottle = 0;
 let currentBrake = 0;
+// Sticky reverse gear: set true while S is held, only cleared by W.
+// Releasing S alone keeps the gear in R so the car coasts backward; otherwise
+// CARLA's auto-trans flips to D and engine-brakes us to a halt mid-roll.
+let gearReverse = false;
 let lastFrameTime = 0;
 let animFrameId: number | null = null;
 
@@ -96,22 +100,23 @@ function update() {
 	const steerCap = LOW_SPEED_STEER_CAP + (1 - LOW_SPEED_STEER_CAP) * t;
 	const cookedSteer = Math.max(-steerCap, Math.min(steerCap, currentSteer));
 
-	// Forward throttle (W / ↑) — CARLA-style: ramp up while held, instant 0 on release.
+	// Throttle — CARLA-style: ramp up while held, instant 0 on release.
+	// W enters/keeps drive gear; S enters/keeps reverse gear. Releasing the
+	// throttle key drops throttle to 0 but the gear sticks so the car coasts.
 	const wantForward = keys['w'] || keys['arrowup'];
-	if (wantForward) {
-		currentForwardThrottle = Math.min(1, currentForwardThrottle + THROTTLE_RAMP * dt);
-		currentReverseThrottle = 0; // can't go forward and reverse at the same time
-	} else {
-		currentForwardThrottle = 0;
-	}
-
-	// Reverse throttle (S / ↓)
 	const wantReverse = keys['s'] || keys['arrowdown'];
-	if (wantReverse) {
+
+	if (wantForward && !wantReverse) {
+		currentForwardThrottle = Math.min(1, currentForwardThrottle + THROTTLE_RAMP * dt);
+		currentReverseThrottle = 0;
+		gearReverse = false;
+	} else if (wantReverse && !wantForward) {
 		currentReverseThrottle = Math.min(1, currentReverseThrottle + THROTTLE_RAMP * dt);
 		currentForwardThrottle = 0;
+		gearReverse = true;
 	} else {
-		currentReverseThrottle = Math.max(0, currentReverseThrottle - THROTTLE_RAMP * 2 * dt);
+		currentForwardThrottle = 0;
+		currentReverseThrottle = 0;
 	}
 
 	// Brake (Space)
@@ -122,15 +127,13 @@ function update() {
 		currentBrake = Math.max(0, currentBrake - 4.0 * 2 * dt);
 	}
 
-	// Determine if we're in reverse mode
-	const isReverse = currentReverseThrottle > 0;
-	const throttle = isReverse ? currentReverseThrottle : currentForwardThrottle;
+	const throttle = gearReverse ? currentReverseThrottle : currentForwardThrottle;
 
 	keyboardInput.set({
 		steer: cookedSteer,
 		throttle,
 		brake: currentBrake,
-		reverse: isReverse
+		reverse: gearReverse
 	});
 
 	animFrameId = requestAnimationFrame(update);
@@ -143,6 +146,7 @@ export function startKeyboardInput(): void {
 	currentForwardThrottle = 0;
 	currentReverseThrottle = 0;
 	currentBrake = 0;
+	gearReverse = false;
 	window.addEventListener('keydown', onKeyDown);
 	window.addEventListener('keyup', onKeyUp);
 	animFrameId = requestAnimationFrame(update);
@@ -160,6 +164,7 @@ export function stopKeyboardInput(): void {
 	currentForwardThrottle = 0;
 	currentReverseThrottle = 0;
 	currentBrake = 0;
+	gearReverse = false;
 	keyboardInput.set({ steer: 0, throttle: 0, brake: 0, reverse: false });
 	keyboardActive.set(false);
 }

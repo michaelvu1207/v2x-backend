@@ -54,7 +54,8 @@ export const GAMEPAD_POLL_RATE = 60;
 
 // Logitech G923 (046d:c266) — 10 axes, 25 buttons
 // Axis 0 = steering, Axis 1 = brake, Axis 2 = gas, Axis 3 = clutch
-// Pedal range varies by OS — auto-detect at runtime
+// Pedals rest at +1.0 and travel toward -1.0 when pressed; hardcoded so input
+// works at spawn without waiting on a sweep-detection window.
 export const DEFAULT_CALIBRATION = {
 	steerAxis: 0,
 	gasAxis: 2,
@@ -62,6 +63,8 @@ export const DEFAULT_CALIBRATION = {
 	steerInverted: false,
 	gasInverted: false,
 	brakeInverted: false,
+	gasRest: 1.0,
+	brakeRest: 1.0,
 };
 
 export const CAMERA_VIEWS = [

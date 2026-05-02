@@ -6,7 +6,7 @@
  */
 
 import { writable, get } from 'svelte/store';
-import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert, V2xZone, TrajectoryInfo, TrajectoryStatus } from '$lib/types';
+import type { DriveSessionState, VehicleTelemetry, CameraView, DriveMessage, VehicleOption, SpawnableObject, PlacedObject, ScenarioInfo, V2xSignal, V2xAlert, V2xZone, TrajectoryInfo, TrajectoryStatus, XoscScenarioInfo, XoscRunnerStatus, XoscEvent, XoscFinishedEvent } from '$lib/types';
 import { v2xZones } from './v2xZones';
 
 // ── Stores ──
@@ -42,6 +42,18 @@ export const v2xSignalCount = writable<number>(0);
 export const v2xAlerts = writable<V2xAlert[]>([]);
 export const trajectoryList = writable<TrajectoryInfo[]>([]);
 export const trajectoryStatus = writable<TrajectoryStatus>({ active: false });
+
+// OpenSCENARIO (.xosc) state
+export const xoscScenarioList = writable<XoscScenarioInfo[]>([]);
+export const xoscRunnerStatus = writable<XoscRunnerStatus>({
+	running: false,
+	file: null,
+	scenario_runner_configured: false,
+});
+export const xoscEventLog = writable<XoscEvent[]>([]);
+export const xoscLastResult = writable<XoscFinishedEvent | null>(null);
+
+const XOSC_LOG_MAX = 500;
 
 // ── WebSocket ──
 
@@ -189,6 +201,50 @@ function handleServerMessage(msg: DriveMessage): void {
 			requestScenarios();
 			break;
 
+		case 'xosc_list':
+			xoscScenarioList.set((msg.scenarios as XoscScenarioInfo[]) ?? []);
+			if (msg.status) {
+				xoscRunnerStatus.set(msg.status as XoscRunnerStatus);
+			}
+			break;
+
+		case 'xosc_started':
+			xoscRunnerStatus.update(s => ({
+				...s,
+				running: true,
+				file: (msg.file as string) ?? null,
+				started_at: (msg.started_at as number) ?? Date.now() / 1000,
+				exit_code: null,
+			}));
+			xoscEventLog.set([]);
+			xoscLastResult.set(null);
+			break;
+
+		case 'xosc_event':
+			xoscEventLog.update(log => {
+				const next = [...log, { line: msg.line as string, ts: msg.ts as number }];
+				return next.length > XOSC_LOG_MAX ? next.slice(-XOSC_LOG_MAX) : next;
+			});
+			break;
+
+		case 'xosc_finished':
+			xoscRunnerStatus.update(s => ({
+				...s,
+				running: false,
+				exit_code: (msg.exit_code as number) ?? null,
+			}));
+			xoscLastResult.set({
+				file: (msg.file as string) ?? null,
+				exit_code: (msg.exit_code as number) ?? null,
+				verdict: (msg.verdict as 'SUCCESS' | 'FAILURE') ?? 'FAILURE',
+				duration_sec: (msg.duration_sec as number) ?? 0,
+			});
+			break;
+
+		case 'xosc_stopped':
+			xoscRunnerStatus.update(s => ({ ...s, running: false }));
+			break;
+
 		case 'camera_switched':
 			// Acknowledged — no state change needed
 			break;
@@ -311,6 +367,20 @@ export function loadScenario(file: string): void {
 
 export function deleteScenario(file: string): void {
 	send({ type: 'delete_scenario', file });
+}
+
+// ── OpenSCENARIO (.xosc) Actions ──
+
+export function requestXoscScenarios(): void {
+	send({ type: 'list_xosc_scenarios' });
+}
+
+export function startXoscScenario(file: string): void {
+	send({ type: 'start_xosc_scenario', file });
+}
+
+export function stopXoscScenario(): void {
+	send({ type: 'stop_xosc_scenario' });
 }
 
 export function endSession(): void {
