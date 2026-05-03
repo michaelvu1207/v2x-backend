@@ -138,14 +138,26 @@ function handleServerMessage(msg: DriveMessage): void {
 			if (get(sessionState) === 'ready') {
 				sessionState.set('driving');
 			}
-			// Handle V2X proximity alerts from telemetry
+			// Handle V2X proximity alerts from telemetry. Bridge re-broadcasts
+			// every tick, so we dedup by `id` here: an incoming alert with an
+			// id we already have updates that toast's distance in place; new
+			// ids become a fresh toast. `_lastSeen` is set every update so
+			// V2xToast can auto-dismiss alerts that stop arriving.
 			if (msg.v2x_alerts) {
+				const incoming = msg.v2x_alerts as V2xAlert[];
+				const now = Date.now();
 				v2xAlerts.update(existing => {
-					const newAlerts = (msg.v2x_alerts as V2xAlert[]).map(a => ({
-						...a,
-						_uid: Date.now() + Math.random(),
-					}));
-					return [...existing, ...newAlerts];
+					const byId = new Map<number, V2xAlert>();
+					for (const e of existing) byId.set(e.id, e);
+					for (const a of incoming) {
+						const prev = byId.get(a.id);
+						if (prev) {
+							byId.set(a.id, { ...prev, ...a, _lastSeen: now } as V2xAlert);
+						} else {
+							byId.set(a.id, { ...a, _uid: now + Math.random(), _lastSeen: now } as V2xAlert);
+						}
+					}
+					return Array.from(byId.values());
 				});
 			}
 			break;

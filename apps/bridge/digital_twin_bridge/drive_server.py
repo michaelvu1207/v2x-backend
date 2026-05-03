@@ -228,11 +228,11 @@ class DriveSession:
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
-        # Emergency-vehicle pull-over warning: alert each firetruck once when
-        # it enters this radius and is closing on the ego; clear when it
-        # leaves so a re-entry alerts again.
+        # Emergency-vehicle pull-over warning: every tick, broadcast a
+        # v2x_alert for each firetruck within this radius. Browser dedups by
+        # actor id (single toast per truck, distance updates in place) and
+        # auto-dismisses when alerts stop arriving.
         self._eva_warning_distance_m = eva_warning_distance_m
-        self._eva_alerted_ids: set = set()
         # Shared V2X prop pool across sessions (object_id -> actor_id). Owned by
         # the server process, not the session. None → session-owned props (legacy).
         self._shared_prop_pool = shared_prop_pool
@@ -850,21 +850,21 @@ class DriveSession:
         return {"type": "traffic_despawned", "count": destroyed}
 
     def _check_emergency_vehicle_proximity(self) -> list[dict]:
-        """Return one v2x_alert per firetruck that just entered warning range.
+        """Return a v2x_alert for every firetruck within warning range, every tick.
 
-        Fires once on entry per actor; cleared when the truck leaves range so
-        a second pass re-alerts. "Approaching" = the truck's velocity vector
-        has a positive component toward the ego (dot >= 0); a truck driving
-        away never triggers.
+        The browser dedups by ``id``: the first message creates a toast, every
+        subsequent message updates the same toast's distance in place. The
+        toast auto-dismisses when no message arrives for the actor (i.e. it
+        left range or was destroyed). No backend-side debouncing — keeping
+        emission stateless avoids the prior "velocity dot oscillates around
+        zero → repeated re-alerts" bug.
         """
         if self.vehicle is None or self._world is None:
             return []
 
         player_loc = self.vehicle.get_transform().location
-        threshold = self._eva_warning_distance_m
-        threshold_sq = threshold * threshold
-        still_in_range: set = set()
-        new_alerts: list[dict] = []
+        threshold_sq = self._eva_warning_distance_m * self._eva_warning_distance_m
+        alerts: list[dict] = []
 
         for actor in self._world.get_actors().filter("vehicle.carlamotors.firetruck"):
             if actor.id == self.vehicle.id:
@@ -875,22 +875,14 @@ class DriveSession:
             dist_sq = dx * dx + dy * dy
             if dist_sq > threshold_sq:
                 continue
-            v = actor.get_velocity()
-            # Vector from truck → ego; dot with velocity > 0 ⇒ closing.
-            if v.x * (-dx) + v.y * (-dy) <= 0:
-                continue
-            still_in_range.add(actor.id)
-            if actor.id in self._eva_alerted_ids:
-                continue
-            new_alerts.append({
+            alerts.append({
                 "id": actor.id,
                 "message": "Emergency vehicle approaching — pull over",
                 "signal_type": "warning",
                 "distance": round(math.sqrt(dist_sq), 1),
             })
 
-        self._eva_alerted_ids = still_in_range
-        return new_alerts
+        return alerts
 
     def get_nearby_actors(self, radius: float = 250.0) -> list[dict]:
         """Return all vehicles within radius meters of the player vehicle.
