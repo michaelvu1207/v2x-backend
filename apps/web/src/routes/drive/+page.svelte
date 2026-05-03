@@ -9,6 +9,7 @@
 		normalizedInput,
 		startPolling,
 		stopPolling,
+		applyDefaultRests,
 	} from '$lib/stores/gamepad';
 
 	import {
@@ -36,6 +37,7 @@
 		switchCamera,
 		endSession,
 		respawnVehicle,
+		clearNonEgoVehicles,
 		requestVehicles,
 		requestObjects,
 		requestScenarios,
@@ -59,6 +61,7 @@
 	import TrafficPanel from '$lib/components/TrafficPanel.svelte';
 	import TrajectoryPanel from '$lib/components/TrajectoryPanel.svelte';
 	import CameraSettingsPanel from '$lib/components/CameraSettingsPanel.svelte';
+	import ScenarioPicker from '$lib/components/ScenarioPicker.svelte';
 	import { checkZoneProximity, resetZoneProximity, clearZones } from '$lib/stores/v2xZones';
 	import { v2xZones } from '$lib/stores/v2xZones';
 	import { syncV2xZones } from '$lib/stores/driveSocket';
@@ -84,6 +87,7 @@
 	let showTrafficPanel = $state(false);
 	let showCameraPanel = $state(false);
 	let showTrajectoryPanel = $state(false);
+	let showXoscPicker = $state(false);
 
 	// Split-panel width for the right-side map (px). Persisted in localStorage.
 	const MAP_WIDTH_MIN = 260;
@@ -97,6 +101,18 @@
 	}
 	let mapPanelWidth = $state<number>(loadStoredMapWidth() ?? 500);
 	let dragging = $state(false);
+
+	type MapMode = 'panel' | 'overlay';
+	const MAP_MODE_STORAGE_KEY = 'drive-map-mode';
+	function loadStoredMapMode(): MapMode {
+		if (typeof localStorage === 'undefined') return 'panel';
+		return localStorage.getItem(MAP_MODE_STORAGE_KEY) === 'overlay' ? 'overlay' : 'panel';
+	}
+	let mapMode = $state<MapMode>(loadStoredMapMode());
+	function toggleMapMode() {
+		mapMode = mapMode === 'panel' ? 'overlay' : 'panel';
+		try { localStorage.setItem(MAP_MODE_STORAGE_KEY, mapMode); } catch { /* storage full */ }
+	}
 
 	function clampMapWidth(w: number): number {
 		const max = typeof window !== 'undefined'
@@ -227,6 +243,11 @@
 	});
 
 	function handleQuickStart() {
+		// Wheel without prior calibration: apply G923 defaults so input works
+		// immediately. Wizard remains available via the "Calibrate Wheel" button.
+		if (inputMode === 'wheel' && !isCalibrated) {
+			applyDefaultRests();
+		}
 		const now = new Date();
 		const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle);
@@ -353,6 +374,9 @@
 		if ((e.key === 'u' || e.key === 'U') && !showObjectPlacer && !showV2xPlacer) {
 			undoPlace();
 		}
+		if (e.key === 'x' || e.key === 'X') {
+			showXoscPicker = !showXoscPicker;
+		}
 	}
 </script>
 
@@ -364,6 +388,10 @@
 
 {#if showCalibration}
 	<CalibrationWizard onComplete={handleCalibrationComplete} />
+{/if}
+
+{#if showXoscPicker}
+	<ScenarioPicker onclose={() => { showXoscPicker = false; }} />
 {/if}
 
 <div class="h-screen w-screen bg-black relative overflow-hidden">
@@ -520,7 +548,7 @@
 					</div>
 
 					<!-- V2X Zone Editor button -->
-					<div class="mb-4">
+					<div class="mb-2">
 						<button onclick={() => { showZoneEditor = true; }}
 							class="w-full py-2.5 bg-gray-800/50 hover:bg-gray-800 border border-gray-700 hover:border-cyan-500/50 rounded-xl text-xs font-body tracking-wider text-gray-300 hover:text-cyan-300 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2">
 							<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -533,19 +561,23 @@
 						</button>
 					</div>
 
+					<!-- OpenSCENARIO Picker button -->
+					<div class="mb-4">
+						<button onclick={() => { showXoscPicker = true; }}
+							class="w-full py-2.5 bg-gray-800/50 hover:bg-gray-800 border border-gray-700 hover:border-purple-500/50 rounded-xl text-xs font-body tracking-wider text-gray-300 hover:text-purple-300 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2">
+							<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+								<path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7-7 7" opacity="0.4" />
+							</svg>
+							OPENSCENARIO (.xosc)
+						</button>
+					</div>
+
 					<!-- Action button -->
-					{#if inputMode === 'wheel' && !isCalibrated}
-						<button onclick={() => showCalibration = true}
-							class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
-							Calibrate Wheel
-						</button>
-						<p class="mt-2 text-[10px] font-body text-yellow-500/80 tracking-wider">CALIBRATION REQUIRED BEFORE DRIVING</p>
-					{:else}
-						<button onclick={handleQuickStart}
-							class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
-							Start Driving
-						</button>
-					{/if}
+					<button onclick={handleQuickStart}
+						class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
+						Start Driving
+					</button>
 
 					<!-- Keyboard shortcuts or wheel status -->
 					<div class="mt-5 pt-4 border-t border-gray-800/60">
@@ -556,7 +588,7 @@
 									['A/D', 'Steer'], ['Space', 'Brake'],
 									['R', 'Respawn'], ['1-4', 'Camera'],
 									['P', 'Place Obj'], ['V', 'V2X Signal'],
-									['U', 'Undo']
+									['U', 'Undo'], ['X', '.xosc']
 								] as [key, action]}
 									<div class="flex items-center gap-2">
 										<kbd class="px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-[10px] font-mono text-gray-400 min-w-[28px] text-center">{key}</kbd>
@@ -564,15 +596,10 @@
 									</div>
 								{/each}
 							</div>
-						{:else if gamepad && isCalibrated}
-							<div class="flex items-center justify-center gap-2">
-								<div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.5)]"></div>
-								<span class="text-xs font-body text-green-400/80 tracking-wider">WHEEL CALIBRATED — READY</span>
-							</div>
 						{:else if gamepad}
 							<div class="flex items-center justify-center gap-2">
-								<div class="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
-								<span class="text-xs font-body text-yellow-500/80 tracking-wider">CALIBRATE WHEEL TO CONTINUE</span>
+								<div class="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.5)]"></div>
+								<span class="text-xs font-body text-green-400/80 tracking-wider">WHEEL CONNECTED — READY</span>
 							</div>
 						{:else}
 							<div class="flex items-center justify-center gap-2">
@@ -605,6 +632,15 @@
 				<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
 				<HudOverlay telemetry={currentTelemetry} isRecording={true} />
 
+				{#if mapMode === 'overlay' && mapData}
+					<DriveMiniMap
+						roadLines={mapData.road_network}
+						originLat={mapData.geo_ref.origin_lat}
+						originLon={mapData.geo_ref.origin_lon}
+						fullPanel={false}
+					/>
+				{/if}
+
 				<!-- V2X toast notifications -->
 				<V2xToast />
 
@@ -620,8 +656,8 @@
 					{/each}
 				</div>
 
-				<!-- Top left info badges -->
-				<div class="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-auto">
+				<!-- Top left info badges (hidden in overlay-map mode to avoid collision with the floating mini-map at left-3 top-3) -->
+				<div class="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-auto {mapMode === 'overlay' ? 'hidden' : ''}">
 					<span class="px-1.5 py-0.5 bg-black/50 rounded text-[10px] text-gray-300">
 						{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 					</span>
@@ -660,6 +696,27 @@
 							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
 						Trajectory
 					</button>
+					<button onclick={() => { showXoscPicker = !showXoscPicker; }}
+						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showXoscPicker
+							? 'bg-purple-600 text-white'
+							: 'bg-black/60 hover:bg-black/80 text-gray-300'}"
+						title="OpenSCENARIO (X)">
+						.xosc
+					</button>
+					<button onclick={toggleMapMode}
+						aria-pressed={mapMode === 'overlay'}
+						aria-label={mapMode === 'overlay' ? 'Switch map to full panel' : 'Switch map to floating overlay'}
+						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {mapMode === 'overlay'
+							? 'bg-cyan-600 text-white'
+							: 'bg-black/60 hover:bg-black/80 text-gray-300'}"
+						title="Toggle map: full panel / floating overlay">
+						Map
+					</button>
+					<button onclick={() => clearNonEgoVehicles()}
+						class="px-2 py-1 bg-orange-600/70 hover:bg-orange-600 rounded text-[10px] font-medium text-white transition-colors"
+						title="Delete all non-ego vehicles (traffic, scenario actors, trajectory playback, placed cars)">
+						Clear NPCs
+					</button>
 					<button onclick={() => respawnVehicle()}
 						class="px-2 py-1 bg-blue-600/70 hover:bg-blue-600 rounded text-[10px] font-medium text-white transition-colors">
 						Respawn
@@ -697,7 +754,7 @@
 			</div>
 
 			<!-- Draggable divider -->
-			{#if mapData}
+			{#if mapData && mapMode === 'panel'}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="relative w-1 flex-shrink-0 bg-gray-800 hover:bg-cyan-500/60 {dragging ? 'bg-cyan-500' : ''} cursor-col-resize transition-colors group"

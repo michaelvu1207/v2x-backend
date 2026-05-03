@@ -2,19 +2,15 @@
  * Gamepad Store — steering wheel + pedal input via the browser Gamepad API.
  *
  * Pedal normalization strategy:
- *   The G923's pedal axes swing between -1 and +1, but the rest position
- *   can be either end and varies between sessions. Instead of guessing the
- *   rest value from an unreliable initial snapshot, we:
+ *   G923 pedals always rest at +1.0 and travel toward -1.0 when pressed, so
+ *   trackers are seeded with `DEFAULT_CALIBRATION.gasRest`/`brakeRest` and
+ *   `detected=true` at module load. Input is live the moment the page loads.
  *
- *   1. Output zeros until we're confident about the mapping.
- *   2. On each poll frame, track the min and max values seen per pedal axis.
- *   3. Once we've seen a full-range sweep (max - min > 1.0), the pedal has
- *      been pressed and released. At that point, the current value is at rest.
- *   4. Fallback: if 120 frames (~2s) pass without a sweep, snapshot whatever
- *      extreme the axis is at now (driver should have stabilized by then).
- *
- * Only axis assignments are persisted to localStorage. Inversion is always
- * re-detected at runtime.
+ *   Sweep-detection only runs when the user remaps an axis via the wizard,
+ *   since the new axis's rest value is unknown. After remap,
+ *   `recalibrateRestValues()` flips trackers back into detect mode and the
+ *   poll loop captures the new rest from a full press+release sweep (or a
+ *   2 s fallback at an extreme).
  */
 
 import { writable, derived, get } from 'svelte/store';
@@ -84,8 +80,14 @@ interface PedalTracker {
 	detected: boolean;
 }
 
-let gas: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: false };
-let brake: PedalTracker = { min: Infinity, max: -Infinity, rest: 0, detected: false };
+let gas: PedalTracker = {
+	min: Infinity, max: -Infinity,
+	rest: DEFAULT_CALIBRATION.gasRest, detected: true,
+};
+let brake: PedalTracker = {
+	min: Infinity, max: -Infinity,
+	rest: DEFAULT_CALIBRATION.brakeRest, detected: true,
+};
 let framesPolled = 0;
 
 const SWEEP_THRESHOLD = 1.0;   // min-max range that confirms a full press+release
@@ -224,7 +226,6 @@ export function startPolling(): void {
 			gamepadIndex.set(gp.index);
 			gamepadConnected.set(true);
 			gamepadName.set(gp.id);
-			resetDetection();
 			break;
 		}
 	}
@@ -250,6 +251,24 @@ export function recalibrateRestValues(): void {
 	resetDetection();
 }
 
+/**
+ * Apply the hardcoded G923 rest values without running detection. Used by
+ * the wizard's Skip path so input is live immediately and a held pedal can't
+ * be miscaptured as the rest position.
+ */
+export function applyDefaultRests(): void {
+	gas = {
+		min: Infinity, max: -Infinity,
+		rest: DEFAULT_CALIBRATION.gasRest, detected: true,
+	};
+	brake = {
+		min: Infinity, max: -Infinity,
+		rest: DEFAULT_CALIBRATION.brakeRest, detected: true,
+	};
+	framesPolled = 0;
+	calibrated.set(true);
+}
+
 // ── Event Handlers ──
 
 function onConnect(e: GamepadEvent) {
@@ -257,7 +276,6 @@ function onConnect(e: GamepadEvent) {
 	gamepadConnected.set(true);
 	gamepadName.set(e.gamepad.id);
 	console.log(`[Gamepad] Connected: ${e.gamepad.id} (${e.gamepad.axes.length} axes, ${e.gamepad.buttons.length} buttons)`);
-	resetDetection();
 }
 
 function onDisconnect(e: GamepadEvent) {

@@ -171,3 +171,29 @@ export interface TrajectoryStatus {
 	vehicle_id?: number;
 	finished?: boolean;
 }
+
+export interface XoscScenarioInfo {
+	file: string;
+	name: string;
+	size_bytes: number;
+}
+
+export interface XoscRunnerStatus {
+	running: boolean;
+	file?: string | null;
+	started_at?: number | null;
+	exit_code?: number | null;
+	scenario_runner_configured: boolean;
+}
+
+export interface XoscEvent {
+	line: string;
+	ts: number;
+}
+
+export interface XoscFinishedEvent {
+	file: string | null;
+	exit_code: number | null;
+	verdict: 'SUCCESS' | 'FAILURE';
+	duration_sec: number;
+}

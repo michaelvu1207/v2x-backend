@@ -21,6 +21,7 @@ from PIL import Image
 
 from digital_twin_bridge.scene_reconstructor import SceneReconstructor
 from digital_twin_bridge.camera_streamer import compute_camera_transform
+from digital_twin_bridge.openscenario_runner import list_xosc
 from digital_twin_bridge.trajectory_player import (
     TrajectoryPlayer,
     list_trajectory_files,
@@ -221,16 +222,26 @@ class DriveSession:
         api_fetcher: Callable,
         shared_prop_pool: Optional[dict] = None,
         trajectory_player: Optional[TrajectoryPlayer] = None,
+        openscenario_runner=None,
+        eva_warning_distance_m: float = 50.0,
     ):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
+        # Emergency-vehicle pull-over warning: every tick, broadcast a
+        # v2x_alert for each firetruck within this radius. Browser dedups by
+        # actor id (single toast per truck, distance updates in place) and
+        # auto-dismisses when alerts stop arriving.
+        self._eva_warning_distance_m = eva_warning_distance_m
         # Shared V2X prop pool across sessions (object_id -> actor_id). Owned by
         # the server process, not the session. None → session-owned props (legacy).
         self._shared_prop_pool = shared_prop_pool
         # Server-owned trajectory player; one playback shared across all sessions
         # in the world. None → trajectory feature disabled.
         self._trajectory_player = trajectory_player
+        # Server-owned OpenSCENARIO runner; one scenario runs at a time across
+        # all sessions. None → feature disabled.
+        self._openscenario_runner = openscenario_runner
         self._reconstructor: Optional[SceneReconstructor] = None
         self.vehicle = None
         self.active_camera: str = "chase"
@@ -272,6 +283,11 @@ class DriveSession:
             if not vehicle_bps:
                 raise RuntimeError("Vehicle blueprint not found")
 
+            # Tag the ego so ScenarioRunner attaches to it by role_name
+            # instead of trying to spawn a duplicate from the .xosc.
+            ego_bp = vehicle_bps[0]
+            ego_bp.set_attribute("role_name", "ego_vehicle")
+
             import random
             spawn_points = self._map.get_spawn_points()
             if not spawn_points:
@@ -280,7 +296,7 @@ class DriveSession:
             random.shuffle(spawn_points)
             self.vehicle = None
             for sp in spawn_points:
-                self.vehicle = self._world.try_spawn_actor(vehicle_bps[0], sp)
+                self.vehicle = self._world.try_spawn_actor(ego_bp, sp)
                 if self.vehicle is not None:
                     break
             if self.vehicle is None:
@@ -403,7 +419,7 @@ class DriveSession:
         speed_ms = math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
         speed_kmh = speed_ms * 3.6
 
-        return {
+        telemetry = {
             "type": "telemetry",
             "speed": round(speed_kmh, 1),
             "gear": getattr(self.vehicle.get_control(), "gear", 0),
@@ -422,6 +438,10 @@ class DriveSession:
             "brake": round(brake, 3),
             "nearby_actors": self.get_nearby_actors(),
         }
+        eva_alerts = self._check_emergency_vehicle_proximity()
+        if eva_alerts:
+            telemetry["v2x_alerts"] = eva_alerts
+        return telemetry
 
     def _update_camera_transform(self):
         """Move the camera sensor to match the active view."""
@@ -806,6 +826,51 @@ class DriveSession:
             safe.append(sp)
         return safe
 
+    def clear_non_ego_vehicles(self) -> dict:
+        """Destroy every vehicle in the world that isn't tagged as ego.
+
+        Preserves any actor with ``role_name == "ego_vehicle"`` so other
+        drive sessions (e.g. a second player on a different laptop sharing
+        this CARLA world) keep their car. Wipes traffic NPCs, OpenSCENARIO
+        actors, the trajectory playback car, and any user-placed vehicles.
+        """
+        if not self._active:
+            raise RuntimeError("No active session")
+
+        destroyed_ids: set[int] = set()
+        preserved = 0
+        for actor in self._world.get_actors().filter("vehicle.*"):
+            role = actor.attributes.get("role_name", "") if actor.attributes else ""
+            if role == "ego_vehicle":
+                preserved += 1
+                continue
+            try:
+                actor.set_autopilot(False)
+            except Exception:
+                pass
+            try:
+                actor.destroy()
+                destroyed_ids.add(actor.id)
+            except Exception as e:
+                logger.debug("Failed to destroy actor %d: %s", actor.id, e)
+
+        _traffic_actor_ids.difference_update(destroyed_ids)
+        self._placed_objects = [
+            o for o in self._placed_objects
+            if o.get("actor") is not None and o["actor"].id not in destroyed_ids
+        ]
+
+        logger.info(
+            "Cleared %d non-ego vehicles (preserved %d ego)",
+            len(destroyed_ids), preserved,
+        )
+        return {
+            "type": "non_ego_vehicles_cleared",
+            "destroyed": len(destroyed_ids),
+            "preserved": preserved,
+            "placed_count": len(self._placed_objects),
+        }
+
     def despawn_traffic(self) -> dict:
         """Remove all traffic vehicles spawned by spawn_traffic."""
         if not self._active:
@@ -828,6 +893,41 @@ class DriveSession:
 
         logger.info("Despawned %d traffic vehicles", destroyed)
         return {"type": "traffic_despawned", "count": destroyed}
+
+    def _check_emergency_vehicle_proximity(self) -> list[dict]:
+        """Return a v2x_alert for every firetruck within warning range, every tick.
+
+        The browser dedups by ``id``: the first message creates a toast, every
+        subsequent message updates the same toast's distance in place. The
+        toast auto-dismisses when no message arrives for the actor (i.e. it
+        left range or was destroyed). No backend-side debouncing — keeping
+        emission stateless avoids the prior "velocity dot oscillates around
+        zero → repeated re-alerts" bug.
+        """
+        if self.vehicle is None or self._world is None:
+            return []
+
+        player_loc = self.vehicle.get_transform().location
+        threshold_sq = self._eva_warning_distance_m * self._eva_warning_distance_m
+        alerts: list[dict] = []
+
+        for actor in self._world.get_actors().filter("vehicle.carlamotors.firetruck"):
+            if actor.id == self.vehicle.id:
+                continue
+            loc = actor.get_transform().location
+            dx = loc.x - player_loc.x
+            dy = loc.y - player_loc.y
+            dist_sq = dx * dx + dy * dy
+            if dist_sq > threshold_sq:
+                continue
+            alerts.append({
+                "id": actor.id,
+                "message": "Emergency vehicle approaching — pull over",
+                "signal_type": "warning",
+                "distance": round(math.sqrt(dist_sq), 1),
+            })
+
+        return alerts
 
     def get_nearby_actors(self, radius: float = 250.0) -> list[dict]:
         """Return all vehicles within radius meters of the player vehicle.
@@ -1139,6 +1239,22 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return result
         elif msg_type == "delete_scenario":
             return delete_scenario(msg["file"])
+        elif msg_type == "list_xosc_scenarios":
+            runner = session._openscenario_runner
+            status = runner.status() if runner is not None else {
+                "running": False, "scenario_runner_configured": False,
+            }
+            return {"type": "xosc_list", "scenarios": list_xosc(), "status": status}
+        elif msg_type == "start_xosc_scenario":
+            if session._openscenario_runner is None:
+                return {"type": "error", "message": "OpenSCENARIO runner unavailable"}
+            if not msg.get("file"):
+                return {"type": "error", "message": "start_xosc_scenario requires 'file'"}
+            return session._openscenario_runner.start(msg["file"])
+        elif msg_type == "stop_xosc_scenario":
+            if session._openscenario_runner is None:
+                return {"type": "error", "message": "OpenSCENARIO runner unavailable"}
+            return session._openscenario_runner.stop()
         elif msg_type == "start_session":
             vehicle_bp = msg.get("vehicle", DEFAULT_VEHICLE)
             return await session.start(
@@ -1164,6 +1280,8 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return session.spawn_traffic(msg.get("preset", "medium"))
         elif msg_type == "despawn_traffic":
             return session.despawn_traffic()
+        elif msg_type == "clear_non_ego_vehicles":
+            return session.clear_non_ego_vehicles()
         elif msg_type == "sync_v2x_zones":
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":
@@ -1222,6 +1340,8 @@ async def serve_drive(
     api_fetcher,
     shared_prop_pool: Optional[dict] = None,
     trajectory_player: Optional[TrajectoryPlayer] = None,
+    openscenario_runner=None,
+    eva_warning_distance_m: float = 50.0,
 ):
     """
     Handle a single WebSocket connection for driving.
@@ -1234,6 +1354,10 @@ async def serve_drive(
 
     ``trajectory_player`` is the server-owned playback singleton; sessions
     issue start/stop/list commands but never own the player.
+
+    ``openscenario_runner`` is the server-owned ScenarioRunner wrapper; the
+    serve_drive task subscribes to its event stream and forwards events to
+    this connection's browser.
     """
     session = DriveSession(
         world=world,
@@ -1241,9 +1365,13 @@ async def serve_drive(
         api_fetcher=api_fetcher,
         shared_prop_pool=shared_prop_pool,
         trajectory_player=trajectory_player,
+        openscenario_runner=openscenario_runner,
+        eva_warning_distance_m=eva_warning_distance_m,
     )
     frame_task = None
     frame_stop = asyncio.Event()
+    xosc_task = None
+    xosc_queue = None
 
     async def stream_frames():
         """Send MJPEG frames at ~20fps as binary WebSocket messages."""
@@ -1260,6 +1388,27 @@ async def serve_drive(
                 except Exception:
                     break
             await asyncio.sleep(0.05)  # 20fps cap
+
+    async def pump_xosc_events():
+        """Forward OpenSCENARIO events from the runner queue to this socket."""
+        if xosc_queue is None:
+            return
+        while True:
+            try:
+                event = await xosc_queue.get()
+            except asyncio.CancelledError:
+                raise
+            try:
+                await websocket.send(json.dumps(event))
+            except Exception:
+                break
+
+    if openscenario_runner is not None:
+        try:
+            xosc_queue = openscenario_runner.subscribe()
+            xosc_task = asyncio.create_task(pump_xosc_events())
+        except Exception as e:
+            logger.debug("OpenSCENARIO subscribe failed: %s", e)
 
     try:
         async for raw_message in websocket:
@@ -1288,6 +1437,15 @@ async def serve_drive(
                 await frame_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        if xosc_task is not None:
+            xosc_task.cancel()
+            try:
+                await xosc_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if openscenario_runner is not None and xosc_queue is not None:
+            openscenario_runner.unsubscribe(xosc_queue)
 
         session._force_cleanup()
         if session in _active_sessions:

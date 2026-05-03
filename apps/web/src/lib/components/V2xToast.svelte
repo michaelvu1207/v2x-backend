@@ -1,26 +1,26 @@
 <script lang="ts">
 	import { v2xAlerts } from '$lib/stores/driveSocket';
 	import { activeZoneAlerts } from '$lib/stores/v2xZones';
-	import { onDestroy } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 
-	// Auto-dismiss alerts after 5 seconds using _uid as key
-	const timers = new Map<number, ReturnType<typeof setTimeout>>();
+	// Bridge re-broadcasts each in-range alert every telemetry tick (~50 ms).
+	// Dismiss when an alert hasn't been refreshed within this window — long
+	// enough to absorb brief drops (a tick the firetruck is just outside the
+	// threshold) without the toast flickering.
+	const STALE_MS = 1500;
+	let cleanup: ReturnType<typeof setInterval> | null = null;
 
-	$effect(() => {
-		for (const alert of $v2xAlerts) {
-			const uid = (alert as any)._uid;
-			if (uid && !timers.has(uid)) {
-				timers.set(uid, setTimeout(() => {
-					v2xAlerts.update(list => list.filter(a => (a as any)._uid !== uid));
-					timers.delete(uid);
-				}, 5000));
-			}
-		}
+	onMount(() => {
+		cleanup = setInterval(() => {
+			const cutoff = Date.now() - STALE_MS;
+			v2xAlerts.update(list =>
+				list.filter(a => ((a as any)._lastSeen ?? Date.now()) > cutoff),
+			);
+		}, 250);
 	});
 
 	onDestroy(() => {
-		for (const timer of timers.values()) clearTimeout(timer);
-		timers.clear();
+		if (cleanup) clearInterval(cleanup);
 	});
 
 	function dismiss(alert: any) {
