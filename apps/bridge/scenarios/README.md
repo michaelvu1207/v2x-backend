@@ -141,6 +141,27 @@ wall-time:
 +            _last_loop_time = _time.time()
 ```
 
+A third patch is a new actor controller, `basic_agent_control`, NPCs
+can use instead of `npc_vehicle_control` to gain vehicle-obstacle and
+traffic-light awareness. SR's bundled `npc_vehicle_control` is bare
+LocalPlanner — it follows waypoints but plows straight through anything
+in its path. `basic_agent_control` wraps CARLA's `BasicAgent` on top of
+the same LocalPlanner, so the actor brakes for vehicles in its forward
+route polygon. Used by `firetruck_intersection.xosc`
+(`<Property name="module" value="basic_agent_control"/>`).
+
+Drop the bundled file into your SR clone:
+
+```bash
+cp apps/bridge/scenarios/patches/basic_agent_control.py \
+   ~/scenario_runner/srunner/scenariomanager/actorcontrols/
+```
+
+No SR core changes required. Tunables inside (forward detection range,
+emergency-stop brake force, traffic-light/stop-sign ignore flags) are
+tuned for the firetruck demo; copy + rename if you want different
+defaults for a different actor.
+
 ## Authoring a `.xosc` file
 
 ### Three mandatory rules

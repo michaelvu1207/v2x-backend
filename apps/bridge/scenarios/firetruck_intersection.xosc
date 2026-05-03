@@ -169,7 +169,11 @@
               <AssignControllerAction>
                 <Controller name="FiretruckController">
                   <Properties>
-                    <Property name="module" value="npc_vehicle_control"/>
+                    <!-- basic_agent_control wraps CARLA's BasicAgent on top of
+                         LocalPlanner so the firetruck slows / emergency-stops
+                         when the ego is in its path, instead of bare
+                         npc_vehicle_control which plows straight through. -->
+                    <Property name="module" value="basic_agent_control"/>
                   </Properties>
                 </Controller>
               </AssignControllerAction>
