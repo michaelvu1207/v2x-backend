@@ -158,36 +158,14 @@ async def main():
             except Exception as e:
                 logger.debug("Prop destroy failed (id=%d): %s", actor.id, e)
 
-    # ── V2X: fetch snapshot and spawn props ──
-    # Shared pool of V2X props (object_id -> actor_id). Seeded by the boot
-    # snapshot and extended by each session's scene reconstruction. Never
-    # destroyed on session end — only at server shutdown — so props survive
-    # across sessions and between drivers in multiplayer.
+    # ── V2X props: boot spawn disabled ──
+    # PropSpawner is intentionally not invoked here. Production V2X
+    # detections were landing traffic cones on the road in the firetruck
+    # scenarios' paths. To re-enable, restore the fetch_v2x_snapshot() +
+    # PropSpawner(world, carla_map).sync(registry) block from git history;
+    # the spawner module (prop_spawner.py) is still available unchanged.
     shared_prop_pool: dict[str, int] = {}
     registry = None
-    detections = fetch_v2x_snapshot(config)
-    if detections:
-        from digital_twin_bridge.object_registry import ObjectRegistry
-        from digital_twin_bridge.prop_spawner import PropSpawner
-        from digital_twin_bridge.geo_utils import gps_to_carla
-
-        registry = ObjectRegistry()
-        registry.update_from_v2x(detections)
-
-        for obj in registry.get_all():
-            try:
-                obj.carla_location = gps_to_carla(carla_map, obj.lat, obj.lon)
-            except Exception:
-                logger.debug("Failed to resolve location for %s", obj.object_id)
-
-        spawner = PropSpawner(world, carla_map)
-        spawned = spawner.sync(registry)
-        # Seed the shared pool with the boot snapshot so session reconstructors
-        # skip objects we've already placed.
-        for obj in registry.get_all():
-            if obj.carla_actor_id is not None:
-                shared_prop_pool[obj.object_id] = obj.carla_actor_id
-        logger.info("Spawned %d V2X props in CARLA world (pool=%d)", spawned, len(shared_prop_pool))
 
     # ── Map data: export road network to S3 ──
     uplink = None
@@ -333,7 +311,7 @@ async def main():
     logger.info("=" * 60)
     logger.info("  CARLA       : %s:%d (sync mode, 20 Hz)", config.CARLA_HOST, config.CARLA_PORT)
     logger.info("  Drive WS    : ws://0.0.0.0:%d", port)
-    logger.info("  V2X objects : %d tracked", len(detections))
+    logger.info("  V2X objects : %d tracked", len(shared_prop_pool))
     logger.info("  State pub   : %s", "active" if uplink else "disabled (no AWS)")
     logger.info("=" * 60)
 

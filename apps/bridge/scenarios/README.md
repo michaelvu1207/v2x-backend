@@ -147,7 +147,7 @@ traffic-light awareness. SR's bundled `npc_vehicle_control` is bare
 LocalPlanner — it follows waypoints but plows straight through anything
 in its path. `basic_agent_control` wraps CARLA's `BasicAgent` on top of
 the same LocalPlanner, so the actor brakes for vehicles in its forward
-route polygon. Used by `firetruck_intersection.xosc`
+route polygon. Used by `firetruck_from_south.xosc` and `firetruck_from_north.xosc`
 (`<Property name="module" value="basic_agent_control"/>`).
 
 Drop the bundled file into your SR clone:

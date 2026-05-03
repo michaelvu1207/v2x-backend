@@ -223,7 +223,7 @@ class DriveSession:
         shared_prop_pool: Optional[dict] = None,
         trajectory_player: Optional[TrajectoryPlayer] = None,
         openscenario_runner=None,
-        eva_warning_distance_m: float = 50.0,
+        eva_warning_distance_m: float = 20.0,
     ):
         self._world = world
         self._map = carla_map
@@ -233,6 +233,11 @@ class DriveSession:
         # actor id (single toast per truck, distance updates in place) and
         # auto-dismisses when alerts stop arriving.
         self._eva_warning_distance_m = eva_warning_distance_m
+        # Per-firetruck timestamps of when the ego entered the truck's forward
+        # path. Used to debounce the "please yield" alert: it only fires after
+        # the ego has been blocking the truck for >10s. Cleared as soon as the
+        # ego leaves the truck's forward cone.
+        self._in_front_since: dict[int, float] = {}
         # Shared V2X prop pool across sessions (object_id -> actor_id). Owned by
         # the server process, not the session. None → session-owned props (legacy).
         self._shared_prop_pool = shared_prop_pool
@@ -439,8 +444,10 @@ class DriveSession:
             "nearby_actors": self.get_nearby_actors(),
         }
         eva_alerts = self._check_emergency_vehicle_proximity()
-        if eva_alerts:
-            telemetry["v2x_alerts"] = eva_alerts
+        yield_alerts = self._check_yield_to_firetruck()
+        all_alerts = eva_alerts + yield_alerts
+        if all_alerts:
+            telemetry["v2x_alerts"] = all_alerts
         return telemetry
 
     def _update_camera_transform(self):
@@ -895,7 +902,11 @@ class DriveSession:
         return {"type": "traffic_despawned", "count": destroyed}
 
     def _check_emergency_vehicle_proximity(self) -> list[dict]:
-        """Return a v2x_alert for every firetruck within warning range, every tick.
+        """Return a v2x_alert for every firetruck approaching from behind the ego, every tick.
+
+        Only firetrucks behind the ego (negative projection on the ego's
+        forward axis) qualify — there's no point telling the driver to pull
+        over for a truck they've already passed.
 
         The browser dedups by ``id``: the first message creates a toast, every
         subsequent message updates the same toast's distance in place. The
@@ -907,7 +918,9 @@ class DriveSession:
         if self.vehicle is None or self._world is None:
             return []
 
-        player_loc = self.vehicle.get_transform().location
+        player_transform = self.vehicle.get_transform()
+        player_loc = player_transform.location
+        forward = player_transform.get_forward_vector()
         threshold_sq = self._eva_warning_distance_m * self._eva_warning_distance_m
         alerts: list[dict] = []
 
@@ -920,12 +933,83 @@ class DriveSession:
             dist_sq = dx * dx + dy * dy
             if dist_sq > threshold_sq:
                 continue
+            # Project ego→truck displacement onto the ego's forward axis.
+            # Negative means the truck is behind the ego.
+            if forward.x * dx + forward.y * dy >= 0:
+                continue
             alerts.append({
                 "id": actor.id,
-                "message": "Emergency vehicle approaching — pull over",
+                "message": "Emergency firetruck approaching from behind. Pull over and yield.",
                 "signal_type": "warning",
                 "distance": round(math.sqrt(dist_sq), 1),
             })
+
+        return alerts
+
+    def _check_yield_to_firetruck(self) -> list[dict]:
+        """Return a v2x_alert when the ego has been blocking a firetruck for >10s.
+
+        "Blocking" is from the truck's perspective: the ego sits ahead along
+        the truck's forward axis, within ``eva_warning_distance_m`` meters,
+        and within ~4 m of its centerline (about a lane width). The 10-second
+        debounce avoids triggering on transient passes (oncoming lanes,
+        crossing intersections at speed) — only sustained obstruction trips
+        the alert.
+
+        Independent of ``_check_emergency_vehicle_proximity``: that one keys
+        off the ego's heading (truck is behind ego) while this one keys off
+        the truck's heading. Both can fire at once when the ego is stopped
+        in the truck's path. Alert ``id`` is offset by 1_000_000 so the
+        browser keeps the two toasts as separate entries.
+        """
+        if self.vehicle is None or self._world is None:
+            return []
+
+        now = time.monotonic()
+        ego_loc = self.vehicle.get_transform().location
+        threshold = self._eva_warning_distance_m
+        threshold_sq = threshold * threshold
+        alerts: list[dict] = []
+        seen_truck_ids: set[int] = set()
+
+        for actor in self._world.get_actors().filter("vehicle.carlamotors.firetruck"):
+            if actor.id == self.vehicle.id:
+                continue
+            t = actor.get_transform()
+            truck_loc = t.location
+            dx = ego_loc.x - truck_loc.x
+            dy = ego_loc.y - truck_loc.y
+            dist_sq = dx * dx + dy * dy
+            if dist_sq > threshold_sq:
+                continue
+            forward = t.get_forward_vector()
+            right = t.get_right_vector()
+            forward_dist = forward.x * dx + forward.y * dy
+            lateral = abs(right.x * dx + right.y * dy)
+            if forward_dist <= 0 or lateral > 4.0:
+                continue
+
+            seen_truck_ids.add(actor.id)
+            since = self._in_front_since.get(actor.id)
+            if since is None:
+                self._in_front_since[actor.id] = now
+                continue
+            if now - since < 10.0:
+                continue
+
+            alerts.append({
+                "id": actor.id + 1_000_000,
+                "message": "Please yield to clear the fire truck path.",
+                "signal_type": "warning",
+                "distance": round(math.sqrt(dist_sq), 1),
+            })
+
+        # Reset the timer for trucks no longer in the cone (drove past, swerved
+        # away, destroyed). Without this, a brief gap and re-entry would skip
+        # the 10s wait.
+        for tid in list(self._in_front_since):
+            if tid not in seen_truck_ids:
+                del self._in_front_since[tid]
 
         return alerts
 
@@ -1341,7 +1425,7 @@ async def serve_drive(
     shared_prop_pool: Optional[dict] = None,
     trajectory_player: Optional[TrajectoryPlayer] = None,
     openscenario_runner=None,
-    eva_warning_distance_m: float = 50.0,
+    eva_warning_distance_m: float = 20.0,
 ):
     """
     Handle a single WebSocket connection for driving.
