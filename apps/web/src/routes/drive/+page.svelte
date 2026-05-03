@@ -588,7 +588,7 @@
 									['A/D', 'Steer'], ['Space', 'Brake'],
 									['R', 'Respawn'], ['1-4', 'Camera'],
 									['P', 'Place Obj'], ['V', 'V2X Signal'],
-									['U', 'Undo'], ['X', '.xosc']
+									['U', 'Undo'], ['X', 'Scenarios']
 								] as [key, action]}
 									<div class="flex items-center gap-2">
 										<kbd class="px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-[10px] font-mono text-gray-400 min-w-[28px] text-center">{key}</kbd>
@@ -644,85 +644,94 @@
 				<!-- V2X toast notifications -->
 				<V2xToast />
 
-				<!-- Camera + controls overlay on the video -->
-				<div class="absolute top-2 right-2 z-20 flex flex-wrap gap-1 pointer-events-auto">
+				<!-- Camera switcher (top-right) -->
+				<div class="absolute top-4 right-4 z-20 flex items-center gap-0.5 bg-black/40 backdrop-blur-md rounded-xl border border-white/10 p-1 shadow-lg pointer-events-auto">
 					{#each [{ id: 'chase', label: 'Chase' }, { id: 'hood', label: 'Hood' }, { id: 'bird', label: 'Bird' }, { id: 'free', label: 'Free' }] as view}
 						<button onclick={() => handleCameraSwitch(view.id as CameraView)}
-							class="px-2 py-1 rounded text-[10px] font-medium transition-colors {activeCamera === view.id
-								? 'bg-white/25 text-white'
-								: 'bg-black/50 hover:bg-black/70 text-gray-300'}">
+							aria-pressed={activeCamera === view.id}
+							class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {activeCamera === view.id
+								? 'bg-white/15 text-white shadow-sm'
+								: 'text-gray-400 hover:text-white hover:bg-white/5'}">
 							{view.label}
 						</button>
 					{/each}
 				</div>
 
-				<!-- Top left info badges (hidden in overlay-map mode to avoid collision with the floating mini-map at left-3 top-3) -->
-				<div class="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-auto {mapMode === 'overlay' ? 'hidden' : ''}">
-					<span class="px-1.5 py-0.5 bg-black/50 rounded text-[10px] text-gray-300">
+				<!-- Status badges (top-left) — hidden in overlay-map mode to avoid collision with the floating mini-map -->
+				<div class="absolute top-4 left-4 z-20 flex items-center gap-2 bg-black/40 backdrop-blur-md rounded-xl border border-white/10 px-3 py-1.5 shadow-lg pointer-events-auto {mapMode === 'overlay' ? 'hidden' : ''}">
+					<span class="w-2 h-2 rounded-full {connected ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'}"></span>
+					<span class="text-xs font-medium text-gray-200 tracking-wide">
 						{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 					</span>
 					{#if inputMode === 'wheel' && gamepad}
+						<span class="h-3.5 w-px bg-white/15"></span>
 						<button onclick={() => showCalibration = true}
-							class="px-1.5 py-0.5 bg-black/50 hover:bg-black/70 rounded text-[10px] text-gray-400 hover:text-white transition-colors">
+							class="text-xs text-gray-400 hover:text-white transition-colors cursor-pointer">
 							Cal
 						</button>
 					{/if}
-					<span class="w-1.5 h-1.5 rounded-full {connected ? 'bg-green-500' : 'bg-red-500'}"></span>
 				</div>
 
-				<!-- Bottom left action buttons -->
-				<div class="absolute bottom-2 left-2 z-20 flex gap-1 pointer-events-auto">
+				<!-- Bottom action bar -->
+				<div class="absolute bottom-4 left-4 z-20 flex flex-col items-stretch gap-0.5 bg-black/40 backdrop-blur-md rounded-xl border border-white/10 p-1 shadow-lg pointer-events-auto">
+					<!-- Panel toggles -->
 					<button onclick={() => { showWeatherPanel = !showWeatherPanel; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; }}
-						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showWeatherPanel
-							? 'bg-cyan-600 text-white'
-							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						aria-pressed={showWeatherPanel}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showWeatherPanel
+							? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(8,145,178,0.45)]'
+							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Weather
 					</button>
 					<button onclick={() => { showTrafficPanel = !showTrafficPanel; showWeatherPanel = false; showCameraPanel = false; showTrajectoryPanel = false; }}
-						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showTrafficPanel
-							? 'bg-amber-600 text-white'
-							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						aria-pressed={showTrafficPanel}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showTrafficPanel
+							? 'bg-amber-600 text-white shadow-[0_0_8px_rgba(217,119,6,0.45)]'
+							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Traffic
 					</button>
 					<button onclick={() => { showCameraPanel = !showCameraPanel; showWeatherPanel = false; showTrafficPanel = false; showTrajectoryPanel = false; }}
-						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showCameraPanel
-							? 'bg-cyan-600 text-white'
-							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						aria-pressed={showCameraPanel}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showCameraPanel
+							? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(8,145,178,0.45)]'
+							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Camera
 					</button>
 					<button onclick={() => { showTrajectoryPanel = !showTrajectoryPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; }}
-						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showTrajectoryPanel
-							? 'bg-blue-600 text-white'
-							: 'bg-black/60 hover:bg-black/80 text-gray-300'}">
+						aria-pressed={showTrajectoryPanel}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showTrajectoryPanel
+							? 'bg-blue-600 text-white shadow-[0_0_8px_rgba(37,99,235,0.45)]'
+							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Trajectory
 					</button>
 					<button onclick={() => { showXoscPicker = !showXoscPicker; }}
-						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {showXoscPicker
-							? 'bg-purple-600 text-white'
-							: 'bg-black/60 hover:bg-black/80 text-gray-300'}"
+						aria-pressed={showXoscPicker}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showXoscPicker
+							? 'bg-purple-600 text-white shadow-[0_0_8px_rgba(147,51,234,0.45)]'
+							: 'text-gray-300 hover:text-white hover:bg-white/5'}"
 						title="OpenSCENARIO (X)">
-						.xosc
+						Scenarios
 					</button>
 					<button onclick={toggleMapMode}
 						aria-pressed={mapMode === 'overlay'}
 						aria-label={mapMode === 'overlay' ? 'Switch map to full panel' : 'Switch map to floating overlay'}
-						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {mapMode === 'overlay'
-							? 'bg-cyan-600 text-white'
-							: 'bg-black/60 hover:bg-black/80 text-gray-300'}"
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer text-gray-300 hover:text-white hover:bg-white/5"
 						title="Toggle map: full panel / floating overlay">
 						Map
 					</button>
+
+					<span class="h-px w-full bg-white/15 my-1.5"></span>
+
 					<button onclick={() => clearNonEgoVehicles()}
-						class="px-2 py-1 bg-orange-600/70 hover:bg-orange-600 rounded text-[10px] font-medium text-white transition-colors"
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide bg-orange-600/80 hover:bg-orange-600 text-white transition-all duration-200 cursor-pointer"
 						title="Delete all non-ego vehicles (traffic, scenario actors, trajectory playback, placed cars)">
 						Clear NPCs
 					</button>
 					<button onclick={() => respawnVehicle()}
-						class="px-2 py-1 bg-blue-600/70 hover:bg-blue-600 rounded text-[10px] font-medium text-white transition-colors">
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide bg-blue-600/80 hover:bg-blue-600 text-white transition-all duration-200 cursor-pointer">
 						Respawn
 					</button>
 					<button onclick={handleEndSession}
-						class="px-2 py-1 bg-red-600/70 hover:bg-red-600 rounded text-[10px] font-medium text-white transition-colors">
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide bg-red-600/80 hover:bg-red-600 text-white transition-all duration-200 cursor-pointer">
 						End
 					</button>
 				</div>

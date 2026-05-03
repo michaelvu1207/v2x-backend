@@ -67,7 +67,7 @@ class Config:
     # Distance (meters) within which an approaching emergency vehicle
     # (vehicle.carlamotors.firetruck) triggers a "pull over" v2x_alert toast
     # on the ego's browser. Only fires when the EVA is closing on the ego.
-    EVA_WARNING_DISTANCE_M: float = 50.0
+    EVA_WARNING_DISTANCE_M: float = 20.0
 
     # Logging
     LOG_LEVEL: str = "INFO"

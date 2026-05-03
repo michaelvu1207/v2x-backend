@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Firetruck approaches an intersection on RFS.
+  Firetruck approaches an intersection on RFS from the south.
 
   Setup
-    - Firetruck spawns at (-60.42, -200.22, z=7.56), heading NW (~113.6°).
+    - Firetruck spawns at (-60.42, -200.22, z=7.56), heading NNW (~113.6°,
+      road 26 lane +1 — heading toward the intersection from the south side).
     - It drives the route up to the intersection at (-139.34, -55.80) and on
       to the goal at (-166.63, 11.18, z=5.68). Snapped to road waypoints from
       m.get_waypoint() at runtime authoring; tolerance for the goal is 6 m.
     - Speed: 8.33 m/s ≈ 30 km/h. Edit AbsoluteTargetSpeed below to change.
+    - Ego is teleported between the firetruck spawn and the intersection
+      ((-103.66, -129.76)) so the firetruck approaches it from behind.
 
   Pass / fail
     - Pass: firetruck reaches the goal (Act StopTrigger).
@@ -20,7 +23,7 @@
     - Not part of this file. The bridge watches CARLA for any
       `vehicle.carlamotors.firetruck` actor and pushes a v2x_alert toast to
       the ego's browser when it's within DTB_EVA_WARNING_DISTANCE_M (default
-      50) and closing on the ego. See drive_server.py.
+      20) and behind the ego. See drive_server.py.
 -->
 <OpenSCENARIO>
   <!-- "CARLA:" prefix in description tells scenario_runner's parser to use
@@ -29,7 +32,7 @@
        actors spawn mirrored across the X axis — into terrain on RFS. -->
   <FileHeader revMajor="1" revMinor="0"
               date="2026-05-01T00:00:00"
-              description="CARLA:Firetruck approaches and crosses an intersection on RFS; ego must yield."
+              description="CARLA:Firetruck approaches the intersection from the south on RFS; ego must yield."
               author="v2x-backend"/>
 
   <ParameterDeclarations/>
@@ -96,7 +99,7 @@
             <Environment name="ClearNoon">
               <TimeOfDay animation="false" dateTime="2026-05-01T12:00:00"/>
               <Weather cloudState="free">
-                <Sun intensity="1.0" azimuth="0.0" elevation="1.31"/>
+                <Sun intensity="1.0" azimuth="3.14159" elevation="1.31"/>
                 <Fog visualRange="100000.0"/>
                 <Precipitation precipitationType="dry" intensity="0.0"/>
               </Weather>

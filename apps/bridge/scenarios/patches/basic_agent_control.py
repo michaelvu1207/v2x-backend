@@ -44,10 +44,10 @@ class BasicAgentControl(BasicControl):
         # the scenario down before it starts.
         self._has_plan = False
 
-        # Default base_vehicle_threshold is 5 m; at 8 m/s that gives ~13 m
-        # forward detection, too tight for an intersection where the ego
-        # enters the route polygon laterally and very late. Bump to 25 m
-        # base + 2.0 speed scaling so ~30 km/h gives ~42 m of warning.
+        # Flat 10 m detection threshold (no speed scaling): the firetruck
+        # only emergency-stops once the ego is within 10 m. Combined with
+        # the bridge's separate 20 m V2X "pull over" alert, this gives the
+        # driver a chance to yield before the truck has to brake.
         # NOTE: don't put max_brake here — opt_dict is forwarded to
         # LocalPlanner too, and overriding its _max_brake from 0.3 to 1.0
         # makes routine startup braking look identical to an emergency
@@ -58,8 +58,8 @@ class BasicAgentControl(BasicControl):
             target_speed=self._target_speed * 3.6,
             opt_dict={
                 'lateral_control_dict': self._args,
-                'base_vehicle_threshold': 25.0,
-                'detection_speed_ratio': 2.0,
+                'base_vehicle_threshold': 10.0,
+                'detection_speed_ratio': 0.0,
                 'use_bbs_detection': True,
                 # Firetruck is on an emergency response; don't treat red
                 # lights or stop signs as hazards. Keep vehicle-obstacle
