@@ -826,6 +826,51 @@ class DriveSession:
             safe.append(sp)
         return safe
 
+    def clear_non_ego_vehicles(self) -> dict:
+        """Destroy every vehicle in the world that isn't tagged as ego.
+
+        Preserves any actor with ``role_name == "ego_vehicle"`` so other
+        drive sessions (e.g. a second player on a different laptop sharing
+        this CARLA world) keep their car. Wipes traffic NPCs, OpenSCENARIO
+        actors, the trajectory playback car, and any user-placed vehicles.
+        """
+        if not self._active:
+            raise RuntimeError("No active session")
+
+        destroyed_ids: set[int] = set()
+        preserved = 0
+        for actor in self._world.get_actors().filter("vehicle.*"):
+            role = actor.attributes.get("role_name", "") if actor.attributes else ""
+            if role == "ego_vehicle":
+                preserved += 1
+                continue
+            try:
+                actor.set_autopilot(False)
+            except Exception:
+                pass
+            try:
+                actor.destroy()
+                destroyed_ids.add(actor.id)
+            except Exception as e:
+                logger.debug("Failed to destroy actor %d: %s", actor.id, e)
+
+        _traffic_actor_ids.difference_update(destroyed_ids)
+        self._placed_objects = [
+            o for o in self._placed_objects
+            if o.get("actor") is not None and o["actor"].id not in destroyed_ids
+        ]
+
+        logger.info(
+            "Cleared %d non-ego vehicles (preserved %d ego)",
+            len(destroyed_ids), preserved,
+        )
+        return {
+            "type": "non_ego_vehicles_cleared",
+            "destroyed": len(destroyed_ids),
+            "preserved": preserved,
+            "placed_count": len(self._placed_objects),
+        }
+
     def despawn_traffic(self) -> dict:
         """Remove all traffic vehicles spawned by spawn_traffic."""
         if not self._active:
@@ -1235,6 +1280,8 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
             return session.spawn_traffic(msg.get("preset", "medium"))
         elif msg_type == "despawn_traffic":
             return session.despawn_traffic()
+        elif msg_type == "clear_non_ego_vehicles":
+            return session.clear_non_ego_vehicles()
         elif msg_type == "sync_v2x_zones":
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":

@@ -37,6 +37,7 @@
 		switchCamera,
 		endSession,
 		respawnVehicle,
+		clearNonEgoVehicles,
 		requestVehicles,
 		requestObjects,
 		requestScenarios,
@@ -100,6 +101,18 @@
 	}
 	let mapPanelWidth = $state<number>(loadStoredMapWidth() ?? 500);
 	let dragging = $state(false);
+
+	type MapMode = 'panel' | 'overlay';
+	const MAP_MODE_STORAGE_KEY = 'drive-map-mode';
+	function loadStoredMapMode(): MapMode {
+		if (typeof localStorage === 'undefined') return 'panel';
+		return localStorage.getItem(MAP_MODE_STORAGE_KEY) === 'overlay' ? 'overlay' : 'panel';
+	}
+	let mapMode = $state<MapMode>(loadStoredMapMode());
+	function toggleMapMode() {
+		mapMode = mapMode === 'panel' ? 'overlay' : 'panel';
+		try { localStorage.setItem(MAP_MODE_STORAGE_KEY, mapMode); } catch { /* storage full */ }
+	}
 
 	function clampMapWidth(w: number): number {
 		const max = typeof window !== 'undefined'
@@ -619,6 +632,15 @@
 				<CameraViewComponent bind:this={cameraViewRef} activeView={activeCamera} onSwitchView={handleCameraSwitch} />
 				<HudOverlay telemetry={currentTelemetry} isRecording={true} />
 
+				{#if mapMode === 'overlay' && mapData}
+					<DriveMiniMap
+						roadLines={mapData.road_network}
+						originLat={mapData.geo_ref.origin_lat}
+						originLon={mapData.geo_ref.origin_lon}
+						fullPanel={false}
+					/>
+				{/if}
+
 				<!-- V2X toast notifications -->
 				<V2xToast />
 
@@ -634,8 +656,8 @@
 					{/each}
 				</div>
 
-				<!-- Top left info badges -->
-				<div class="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-auto">
+				<!-- Top left info badges (hidden in overlay-map mode to avoid collision with the floating mini-map at left-3 top-3) -->
+				<div class="absolute top-2 left-2 z-20 flex items-center gap-1.5 pointer-events-auto {mapMode === 'overlay' ? 'hidden' : ''}">
 					<span class="px-1.5 py-0.5 bg-black/50 rounded text-[10px] text-gray-300">
 						{inputMode === 'keyboard' ? 'WASD' : 'Wheel'}
 					</span>
@@ -681,6 +703,20 @@
 						title="OpenSCENARIO (X)">
 						.xosc
 					</button>
+					<button onclick={toggleMapMode}
+						aria-pressed={mapMode === 'overlay'}
+						aria-label={mapMode === 'overlay' ? 'Switch map to full panel' : 'Switch map to floating overlay'}
+						class="px-2 py-1 rounded text-[10px] font-medium transition-colors {mapMode === 'overlay'
+							? 'bg-cyan-600 text-white'
+							: 'bg-black/60 hover:bg-black/80 text-gray-300'}"
+						title="Toggle map: full panel / floating overlay">
+						Map
+					</button>
+					<button onclick={() => clearNonEgoVehicles()}
+						class="px-2 py-1 bg-orange-600/70 hover:bg-orange-600 rounded text-[10px] font-medium text-white transition-colors"
+						title="Delete all non-ego vehicles (traffic, scenario actors, trajectory playback, placed cars)">
+						Clear NPCs
+					</button>
 					<button onclick={() => respawnVehicle()}
 						class="px-2 py-1 bg-blue-600/70 hover:bg-blue-600 rounded text-[10px] font-medium text-white transition-colors">
 						Respawn
@@ -718,7 +754,7 @@
 			</div>
 
 			<!-- Draggable divider -->
-			{#if mapData}
+			{#if mapData && mapMode === 'panel'}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="relative w-1 flex-shrink-0 bg-gray-800 hover:bg-cyan-500/60 {dragging ? 'bg-cyan-500' : ''} cursor-col-resize transition-colors group"

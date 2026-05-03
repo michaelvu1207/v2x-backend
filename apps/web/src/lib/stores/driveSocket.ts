@@ -309,6 +309,10 @@ function handleServerMessage(msg: DriveMessage): void {
 			requestTrajectories();
 			break;
 
+		case 'non_ego_vehicles_cleared':
+			// Server side handles the destruction; UI updates via the next telemetry tick.
+			break;
+
 		case 'error':
 			lastError.set(msg.message as string);
 			if (get(sessionState) === 'reconstructing') {
@@ -351,6 +355,10 @@ export function switchCamera(view: CameraView): void {
 
 export function respawnVehicle(): void {
 	send({ type: 'respawn' });
+}
+
+export function clearNonEgoVehicles(): void {
+	send({ type: 'clear_non_ego_vehicles' });
 }
 
 export function requestObjects(): void {
