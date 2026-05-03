@@ -72,6 +72,26 @@ class CarlaConnection:
         self._world.apply_settings(settings)
         self._client.set_timeout(10.0)
 
+        # Activate CARLA's dynamic weather with a bright noon that matches the
+        # bundled .xosc EnvironmentActions (sun azimuth=0, elevation≈75°). Without
+        # an explicit set_weather, get_weather() returns WeatherParameters()
+        # defaults (sun_altitude_angle=0). ScenarioRunner's first set_weather
+        # call activates the dynamic weather system, and the bridge's post-scenario
+        # restore would then snap the sun to the horizon — extremely dark shadows.
+        # Matching the .xosc values means the scenario weather is indistinguishable
+        # from normal driving weather.
+        self._world.set_weather(carla.WeatherParameters(
+            cloudiness=0.0,
+            precipitation=0.0,
+            precipitation_deposits=0.0,
+            wind_intensity=30.0,
+            sun_azimuth_angle=180.0,
+            sun_altitude_angle=75.0,
+            fog_density=0.0,
+            fog_distance=100000.0,
+            wetness=0.0,
+        ))
+
         logger.info(
             "Connected to CARLA. Map: %s | Sync mode enabled.",
             self._map.name,
