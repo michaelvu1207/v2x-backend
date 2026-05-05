@@ -18,8 +18,10 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -102,7 +104,10 @@ class OpenScenarioRunner:
         self._current_file: Optional[str] = None
         self._started_at: Optional[float] = None
         self._exit_code: Optional[int] = None
-        self._saved_weather = None
+        # Path to a per-launch rewritten .xosc (with the calling session's ego
+        # role injected). Cleared on scenario exit. None when SR is using the
+        # original file (default ego_role).
+        self._temp_xosc_path: Optional[str] = None
 
         self._subscribers: list[asyncio.Queue] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -157,8 +162,16 @@ class OpenScenarioRunner:
             "scenario_runner_configured": bool(self._sr_path) and os.path.isdir(self._sr_path),
         }
 
-    def start(self, filename: str) -> dict:
+    def start(self, filename: str, ego_role: str = "ego_vehicle") -> dict:
         """Boot ScenarioRunner with the given .xosc file.
+
+        ``ego_role`` is the role_name of the ego vehicle SR should attach to.
+        Defaults to ``"ego_vehicle"`` (the original .xosc string) for backward
+        compat. When a session passes its own per-session role
+        (e.g. ``"ego_vehicle_7f8a"``), the .xosc is rewritten into a temp file
+        with every reference to ``"ego_vehicle"`` updated to the new role —
+        SR then attaches to that exact ego, ignoring other drivers' egos in
+        a multi-session world.
 
         Raises if a scenario is already running, the file is missing, or
         the ScenarioRunner path isn't configured / installed.
@@ -177,6 +190,9 @@ class OpenScenarioRunner:
             raise RuntimeError(f"scenario_runner.py not found at {runner_script}")
 
         xosc_path = _resolve_xosc_path(filename)
+        if ego_role and ego_role != "ego_vehicle":
+            xosc_path = self._rewrite_xosc_for_session(xosc_path, ego_role)
+            self._temp_xosc_path = xosc_path
 
         # --sync makes SR the sole ticker; the bridge's tick_loop yields while
         # is_running is True and re-arms sync mode after SR exits.
@@ -250,23 +266,50 @@ class OpenScenarioRunner:
             "pid": self._proc.pid,
         }
 
-    def _prepare_world_for_launch(self) -> None:
-        """Snapshot weather + flip world to async mode before the subprocess.
+    def _rewrite_xosc_for_session(self, src_path: str, ego_role: str) -> str:
+        """Copy ``src_path`` to a temp .xosc, replacing the ego role references.
 
-        SR overwrites weather to `carla.WeatherParameters()` (sun_altitude=0,
-        dark) when the .xosc has no EnvironmentAction, so we save it for
-        restore in the reader thread's finally block. SR also calls
-        apply_settings(sync=True) on startup, which deadlocks against an
-        already-sync world that nobody is ticking — we flip to async first
-        so that call returns cleanly.
+        Targets the two attributes that drive SR's actor lookup:
+          * ``<ScenarioObject name="ego_vehicle">`` → ``name="<ego_role>"``
+          * ``entityRef="ego_vehicle"`` (Private, EntityRef, etc.) → ``"<ego_role>"``
+
+        Leaves ``<Property name="type" value="ego_vehicle"/>`` alone — that's
+        SR's entity-type marker, not a role reference. Plain string replace
+        rather than XML parse/write so comments, attribute order, and whitespace
+        are preserved exactly (avoids tickling any SR parser quirk that depends
+        on the file's original formatting).
+        """
+        with open(src_path) as f:
+            content = f.read()
+        content = content.replace('name="ego_vehicle"', f'name="{ego_role}"')
+        content = content.replace('entityRef="ego_vehicle"', f'entityRef="{ego_role}"')
+        fd, temp_path = tempfile.mkstemp(suffix=".xosc", prefix="bridge_ego_")
+        os.close(fd)
+        with open(temp_path, "w") as f:
+            f.write(content)
+        return temp_path
+
+    def _prepare_world_for_launch(self) -> None:
+        """Clean leftover scenario actors and flip world to async mode.
+
+        Two reasons to scrub the world before SR launches:
+          * SR signal-handler exits (Stop button) skip ScenarioManager.cleanup,
+            so the firetruck (and any other scenario NPC) lives on in CARLA.
+          * Even on natural exit, a partially-spawned actor pool can survive
+            if the previous SR crashed. The next run's actor lookup gets
+            confused.
+        Wipe every vehicle except the ones the bridge owns (ego, trajectory
+        playback, traffic-manager NPCs) so SR sees a clean slate.
+
+        SR calls apply_settings(sync=True) on startup, which deadlocks
+        against an already-sync world that nobody is ticking — we flip to
+        async first so that call returns cleanly. Weather is NOT
+        snapshotted: the .xosc <EnvironmentAction> is the source of truth
+        and its weather persists past scenario end.
         """
         if self._world is None:
             return
-        try:
-            self._saved_weather = self._world.get_weather()
-        except Exception as e:
-            logger.warning("Failed to snapshot weather pre-launch: %s", e)
-            self._saved_weather = None
+        self._clear_scenario_actors()
         try:
             settings = self._world.get_settings()
             if settings.synchronous_mode:
@@ -275,6 +318,39 @@ class OpenScenarioRunner:
                 self._world.apply_settings(settings)
         except Exception as e:
             logger.warning("Failed to switch to async mode pre-launch: %s", e)
+
+    def _clear_scenario_actors(self) -> None:
+        """Destroy any vehicle that isn't owned by the bridge.
+
+        Preserved roles:
+          * ``ego_vehicle*`` — drive sessions (per-session role suffix)
+          * ``trajectory`` — TrajectoryPlayer's playback car
+          * ``autopilot`` — bridge-spawned traffic NPCs
+        Everything else (OpenSCENARIO NPCs from prior runs, stale spawns
+        from a crashed SR, manually placed cars) is destroyed.
+        """
+        if self._world is None:
+            return
+        destroyed = 0
+        try:
+            actors = list(self._world.get_actors().filter("vehicle.*"))
+        except Exception as e:
+            logger.warning("Failed to enumerate vehicles for cleanup: %s", e)
+            return
+        for actor in actors:
+            try:
+                role = actor.attributes.get("role_name", "") if actor.attributes else ""
+            except Exception:
+                role = ""
+            if role.startswith("ego_vehicle") or role in ("trajectory", "autopilot"):
+                continue
+            try:
+                actor.destroy()
+                destroyed += 1
+            except Exception as e:
+                logger.debug("Failed to destroy scenario actor %d: %s", actor.id, e)
+        if destroyed:
+            logger.info("Cleared %d leftover scenario actor(s)", destroyed)
 
     def stop(self) -> dict:
         """Terminate the running ScenarioRunner subprocess (if any)."""
@@ -324,14 +400,19 @@ class OpenScenarioRunner:
                 self._current_file, self._exit_code, duration,
             )
 
-            # tick_loop re-arms sync mode; weather belongs here because it's
-            # the runner's responsibility (SR clobbers it from the .xosc).
-            if self._world is not None and self._saved_weather is not None:
+            if self._temp_xosc_path:
                 try:
-                    self._world.set_weather(self._saved_weather)
+                    os.unlink(self._temp_xosc_path)
                 except Exception as e:
-                    logger.warning("Failed to restore weather: %s", e)
-            self._saved_weather = None
+                    logger.debug("Failed to delete temp xosc %s: %s", self._temp_xosc_path, e)
+                self._temp_xosc_path = None
+
+            # SR's signal-handler exit path (Stop button) skips
+            # ScenarioManager.cleanup, leaving the firetruck and other
+            # scenario NPCs in the world. Even natural exits can leak when
+            # SR crashes mid-spawn. Wipe them now so the next launch's
+            # entityRef lookups don't collide with stale role_names.
+            self._clear_scenario_actors()
 
             self._broadcast({
                 "type": "xosc_finished",
