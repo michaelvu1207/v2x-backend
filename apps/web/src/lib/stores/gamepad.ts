@@ -25,6 +25,14 @@ export const gamepadIndex = writable<number>(-1);
 export const rawAxes = writable<number[]>([]);
 export const rawButtons = writable<boolean[]>([]);
 
+// Wheel reverse gear. The G923 has no reverse pedal, so a face button
+// stands in for the gear stick. Press once → R, press again → D. The
+// gas pedal magnitude carries through unchanged; the bridge interprets
+// `reverse=true` and drives the throttle backward.
+const REVERSE_BUTTON_INDEX = 0; // PS X / Xbox A — first face button
+export const wheelReverseGear = writable<boolean>(false);
+let _prevReverseButtonPressed = false;
+
 // ── Calibration (persisted) ──
 
 const STORAGE_KEY = 'drive_calibration_v4';
@@ -153,8 +161,8 @@ function normalizePedal(raw: number, rest: number): number {
 }
 
 export const normalizedInput = derived(
-	[rawAxes, calibration],
-	([$rawAxes, $cal]): NormalizedInput => {
+	[rawAxes, calibration, wheelReverseGear],
+	([$rawAxes, $cal, $reverse]): NormalizedInput => {
 		if ($rawAxes.length === 0 || !gas.detected) {
 			return { steer: 0, throttle: 0, brake: 0, reverse: false };
 		}
@@ -164,7 +172,19 @@ export const normalizedInput = derived(
 			? -($rawAxes[$cal.steerAxis] ?? 0)
 			: ($rawAxes[$cal.steerAxis] ?? 0);
 		if (Math.abs(steer) < GAMEPAD_DEADZONE) steer = 0;
-		steer = Math.max(-1, Math.min(1, steer));
+		// Non-linear curve: gentle near center, ramps toward full lock.
+		// Mirrors CARLA's manual_control_steeringwheel.py G29 mapping
+		// (`K1 * tan(1.1 * input)`, K1 = 0.55). At quarter-turn the
+		// actual steer command is ~0.15 instead of 0.25, which keeps
+		// lateral force inside the tire's grip envelope at speed.
+		if (steer !== 0) {
+			steer = 0.55 * Math.tan(1.1 * steer);
+		}
+		// Cap at ±0.7 — matches manual_control.py line 616
+		// (`min(0.7, max(-0.7, steer))`). Full lock is 0.7, not 1.0,
+		// which is the single biggest reason that example feels grippier
+		// than ours did with raw ±1.0 steering.
+		steer = Math.max(-0.7, Math.min(0.7, steer));
 
 		// Pedals
 		let throttle = normalizePedal($rawAxes[$cal.gasAxis] ?? 0, gas.rest);
@@ -174,7 +194,7 @@ export const normalizedInput = derived(
 		if (throttle < GAMEPAD_DEADZONE) throttle = 0;
 		if (brakeVal < GAMEPAD_DEADZONE) brakeVal = 0;
 
-		return { steer, throttle, brake: brakeVal, reverse: false };
+		return { steer, throttle, brake: brakeVal, reverse: $reverse };
 	}
 );
 
@@ -191,7 +211,18 @@ function poll() {
 	}
 
 	rawAxes.set([...gp.axes]);
-	rawButtons.set(gp.buttons.map((b) => b.pressed));
+	const buttonsPressed = gp.buttons.map((b) => b.pressed);
+	rawButtons.set(buttonsPressed);
+
+	// Edge-trigger reverse-gear toggle on the dedicated button. Press
+	// once → R, press again → D. State sticks across frames the way the
+	// keyboard's S-key gear does — releasing the button doesn't shift
+	// out of R, only pressing again does.
+	const reversePressed = buttonsPressed[REVERSE_BUTTON_INDEX] ?? false;
+	if (reversePressed && !_prevReverseButtonPressed) {
+		wheelReverseGear.update((r) => !r);
+	}
+	_prevReverseButtonPressed = reversePressed;
 
 	// Update pedal detection
 	if (!gas.detected || !brake.detected) {
@@ -240,6 +271,8 @@ export function stopPolling(): void {
 	}
 	window.removeEventListener('gamepadconnected', onConnect);
 	window.removeEventListener('gamepaddisconnected', onDisconnect);
+	wheelReverseGear.set(false);
+	_prevReverseButtonPressed = false;
 }
 
 /**

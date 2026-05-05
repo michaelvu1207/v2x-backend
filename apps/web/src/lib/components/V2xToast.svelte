@@ -56,15 +56,15 @@
 </script>
 
 {#if $v2xAlerts.length > 0 || $activeZoneAlerts.length > 0}
-	<div class="absolute top-14 right-2 z-40 flex flex-col gap-2 pointer-events-auto max-w-xs">
+	<div class="absolute top-14 right-2 z-40 flex flex-col gap-3 pointer-events-auto max-w-[480px]">
 		<!-- Persistent zone alerts (show while inside, disappear on exit) -->
 		{#each $activeZoneAlerts as entry (entry.zone.id)}
-			<div class="rounded-lg border-l-4 px-3 py-2 shadow-lg backdrop-blur-sm animate-slide-in {typeColor(entry.zone.signal_type)}">
-				<div class="flex items-start gap-2">
-					<span class="text-lg leading-none">{typeIcon(entry.zone.signal_type)}</span>
+			<div class="rounded-lg border-l-[6px] px-5 py-3 shadow-lg backdrop-blur-sm animate-slide-in {typeColor(entry.zone.signal_type)}">
+				<div class="flex items-start gap-3">
+					<span class="text-[54px] leading-none">{typeIcon(entry.zone.signal_type)}</span>
 					<div class="flex-1 min-w-0">
-						<p class="text-[10px] font-bold text-white/70 uppercase tracking-wide">{typeLabel(entry.zone.signal_type)} ZONE</p>
-						<p class="text-sm font-medium text-white leading-tight">{entry.zone.message || entry.zone.name}</p>
+						<p class="text-[30px] font-bold text-white/70 uppercase tracking-wide">{typeLabel(entry.zone.signal_type)} ZONE</p>
+						<p class="text-[42px] font-medium text-white leading-tight">{entry.zone.message || entry.zone.name}</p>
 					</div>
 				</div>
 			</div>
@@ -72,16 +72,16 @@
 
 		<!-- Server-side V2X alerts (auto-dismiss after 5s) -->
 		{#each $v2xAlerts as alert ((alert as any)._uid)}
-			<div class="rounded-lg border-l-4 px-3 py-2 shadow-lg backdrop-blur-sm animate-slide-in {typeColor(alert.signal_type)}">
-				<div class="flex items-start gap-2">
-					<span class="text-lg leading-none">{typeIcon(alert.signal_type)}</span>
+			<div class="rounded-lg border-l-[6px] px-5 py-3 shadow-lg backdrop-blur-sm animate-slide-in {typeColor(alert.signal_type)}">
+				<div class="flex items-start gap-3">
+					<span class="text-[54px] leading-none">{typeIcon(alert.signal_type)}</span>
 					<div class="flex-1 min-w-0">
-						<p class="text-[10px] font-bold text-white/70 uppercase tracking-wide">{typeLabel(alert.signal_type)}</p>
-						<p class="text-sm font-medium text-white leading-tight">{alert.message}</p>
-						<p class="text-[10px] text-white/50 mt-0.5">{alert.distance}m away</p>
+						<p class="text-[30px] font-bold text-white/70 uppercase tracking-wide">{typeLabel(alert.signal_type)}</p>
+						<p class="text-[42px] font-medium text-white leading-tight">{alert.message}</p>
+						<p class="text-[30px] text-white/50 mt-1">{alert.distance}m away</p>
 					</div>
 					<button onclick={() => dismiss(alert)}
-						class="text-white/50 hover:text-white text-xs leading-none p-1">
+						class="text-white/50 hover:text-white text-[36px] leading-none p-1">
 						✕
 					</button>
 				</div>

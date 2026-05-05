@@ -238,6 +238,13 @@ class DriveSession:
         # the ego has been blocking the truck for >10s. Cleared as soon as the
         # ego leaves the truck's forward cone.
         self._in_front_since: dict[int, float] = {}
+        # Per-session unique ego role_name. ScenarioRunner attaches to the ego
+        # via its role_name; with multiple browsers sharing a CARLA world, a
+        # global "ego_vehicle" tag would let SR pick whichever ego it found
+        # first instead of the one belonging to the session that clicked Start.
+        # Each session stamps its own ego with a unique role and the runner
+        # rewrites the .xosc on launch to reference that exact role.
+        self._ego_role = f"ego_vehicle_{id(self):x}"
         # Shared V2X prop pool across sessions (object_id -> actor_id). Owned by
         # the server process, not the session. None → session-owned props (legacy).
         self._shared_prop_pool = shared_prop_pool
@@ -261,6 +268,14 @@ class DriveSession:
         self._camera_width = 720
         self._camera_height = 720
         self._camera_fov = 90.0
+        # Custom post-processing attrs persisted across set_camera_settings respawns.
+        self._camera_extra_attrs: dict[str, str] = {}
+        # Vehicle bounding-box half-extents, populated after spawn. Camera
+        # transforms scale by these so they fit any vehicle (matches the
+        # bound_x/y/z idiom in CARLA's manual_control.py).
+        self._bound_x = 2.5
+        self._bound_y = 1.0
+        self._bound_z = 0.8
 
     async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
@@ -289,9 +304,11 @@ class DriveSession:
                 raise RuntimeError("Vehicle blueprint not found")
 
             # Tag the ego so ScenarioRunner attaches to it by role_name
-            # instead of trying to spawn a duplicate from the .xosc.
+            # instead of trying to spawn a duplicate from the .xosc. The role
+            # is per-session (see self._ego_role) so SR picks this session's
+            # ego specifically when other drivers are sharing the world.
             ego_bp = vehicle_bps[0]
-            ego_bp.set_attribute("role_name", "ego_vehicle")
+            ego_bp.set_attribute("role_name", self._ego_role)
 
             import random
             spawn_points = self._map.get_spawn_points()
@@ -308,6 +325,36 @@ class DriveSession:
                 raise RuntimeError("Failed to spawn vehicle")
 
             # Physics power cap removed — vehicle runs at stock max_rpm / torque curve.
+
+            # Stable wheel-ground contact at speed. CARLA's default raycast
+            # wheels can momentarily lose contact during fast cornering,
+            # which feels like the car "gliding" or losing grip. Sweep
+            # collision (used in CARLA's own manual_control.py example)
+            # tracks the wheel volume across each frame so it can't skip
+            # over the road. Pair with a modest tire-friction bump above
+            # the Tesla Model 3's stock 3.5 — the stock Tesla is on the
+            # slipperier end of CARLA's catalog and the ±0.7 steering cap
+            # alone wasn't quite enough to keep it planted at speed.
+            try:
+                physics = self.vehicle.get_physics_control()
+                physics.use_sweep_wheel_collision = True
+                wheels = physics.wheels
+                for wh in wheels:
+                    wh.tire_friction = 4.5
+                physics.wheels = wheels
+                self.vehicle.apply_physics_control(physics)
+            except Exception as e:
+                logger.warning("Failed to apply ego physics tweaks: %s", e)
+
+            # Cache vehicle half-extents so camera transforms scale to the
+            # actual model (matches manual_control.py's bound_x/y/z idiom).
+            try:
+                bb = self.vehicle.bounding_box.extent
+                self._bound_x = 0.5 + bb.x
+                self._bound_y = 0.5 + bb.y
+                self._bound_z = 0.5 + bb.z
+            except Exception:
+                self._bound_x, self._bound_y, self._bound_z = 2.5, 1.0, 0.8
 
             # Attach RGB camera sensor to the vehicle
             self._attach_camera(bp_lib)
@@ -331,6 +378,47 @@ class DriveSession:
             self._force_cleanup()
             raise
 
+    @staticmethod
+    def _attachment_for_view(view: str):
+        """SpringArmGhost auto-orients the camera toward the parent and
+        smoothly lags during rotation — great for external chase-style
+        views, terrible for cockpit/hood (would face backward at the
+        parent) or bird (spring can't reasonably extend 25 m straight up).
+        Match manual_control.py: Rigid for cockpit, SpringArmGhost for
+        external follow cameras.
+        """
+        import carla
+        if view in ("hood", "bird"):
+            return carla.AttachmentType.Rigid
+        return carla.AttachmentType.SpringArmGhost
+
+    def _transform_for_view(self, view: str):
+        """Camera transforms scaled by the vehicle's bounding box, copied
+        from manual_control.py's `_camera_transforms` list (lines 1080-85).
+        """
+        import carla
+        bx, by, bz = self._bound_x, self._bound_y, self._bound_z
+        if view == "hood":
+            # manual_control index 1: dashboard / front-bumper view
+            return carla.Transform(carla.Location(x=+0.8 * bx, y=0.0, z=1.3 * bz))
+        if view == "free":
+            # manual_control index 3: high-back chase, slightly tilted
+            return carla.Transform(
+                carla.Location(x=-2.8 * bx, y=0.0, z=4.6 * bz),
+                carla.Rotation(pitch=6.0),
+            )
+        if view == "bird":
+            # No equivalent in manual_control — true top-down for the map view
+            return carla.Transform(carla.Location(x=0.0, z=25.0), carla.Rotation(pitch=-90.0))
+        # chase (default): manual_control index 0, with z slightly raised
+        # because the SpringArmGhost settled position lags below the
+        # configured offset, so the configured z has to be a touch above
+        # the desired *settled* height.
+        return carla.Transform(
+            carla.Location(x=-2.0 * bx, y=0.0, z=2.4 * bz),
+            carla.Rotation(pitch=8.0),
+        )
+
     def _attach_camera(self, bp_lib):
         """Attach an RGB camera sensor to the vehicle for streaming frames."""
         try:
@@ -346,14 +434,14 @@ class DriveSession:
             camera_bp.set_attribute("fov", str(self._camera_fov))
             camera_bp.set_attribute("sensor_tick", "0.05")  # 20 FPS
 
-            # Initial transform: chase camera
-            cam_transform = carla.Transform(
-                carla.Location(x=-8.0, z=4.0),
-                carla.Rotation(pitch=-15.0),
-            )
+            # Initial transform: chase camera, scaled to vehicle bounds
+            # exactly the way manual_control.py does it (index 0 of its
+            # _camera_transforms list).
+            cam_transform = self._transform_for_view(self.active_camera)
 
             self._camera_sensor = self._world.spawn_actor(
-                camera_bp, cam_transform, attach_to=self.vehicle
+                camera_bp, cam_transform, attach_to=self.vehicle,
+                attachment_type=self._attachment_for_view(self.active_camera),
             )
             self._camera_sensor.listen(self._on_camera_frame)
             logger.info("Camera sensor attached (%dx%d @ 20fps)", self._camera_width, self._camera_height)
@@ -416,9 +504,6 @@ class DriveSession:
 
         self.vehicle.apply_control(control)
 
-        # Update camera position based on active view
-        self._update_camera_transform()
-
         transform = self.vehicle.get_transform()
         velocity = self.vehicle.get_velocity()
         speed_ms = math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
@@ -451,21 +536,51 @@ class DriveSession:
         return telemetry
 
     def _update_camera_transform(self):
-        """Move the camera sensor to match the active view."""
+        """Switch to the active view by respawning the camera sensor.
+
+        We don't use `set_transform` here because the camera is attached
+        with `SpringArmGhost`, which has an internal arm-length that
+        evolves over time from the parent toward the desired offset.
+        Calling `set_transform` snaps the spring to the full configured
+        offset (the rigid desired position), bypassing the natural
+        settling animation. Respawning gives every view-switch the same
+        fresh spring extension behavior the initial spawn has.
+        """
         if self._camera_sensor is None or self.vehicle is None:
             return
         try:
             import carla
-            configs = {
-                "chase": carla.Transform(carla.Location(x=-8.0, z=4.0), carla.Rotation(pitch=-15.0)),
-                "hood": carla.Transform(carla.Location(x=0.5, z=1.5), carla.Rotation(pitch=0.0)),
-                "bird": carla.Transform(carla.Location(x=0.0, z=25.0), carla.Rotation(pitch=-90.0)),
-                "free": carla.Transform(carla.Location(x=-5.0, z=3.0), carla.Rotation(pitch=-10.0)),
-            }
-            new_transform = configs.get(self.active_camera, configs["chase"])
-            self._camera_sensor.set_transform(new_transform)
-        except Exception:
-            pass
+            self._accepting_frames = False
+            try:
+                self._camera_sensor.stop()
+            except Exception:
+                pass
+            try:
+                self._camera_sensor.destroy()
+            except Exception:
+                pass
+
+            bp_lib = self._world.get_blueprint_library()
+            camera_bp = bp_lib.find("sensor.camera.rgb")
+            camera_bp.set_attribute("image_size_x", str(self._camera_width))
+            camera_bp.set_attribute("image_size_y", str(self._camera_height))
+            camera_bp.set_attribute("fov", str(self._camera_fov))
+            camera_bp.set_attribute("sensor_tick", "0.05")
+            for key, value in self._camera_extra_attrs.items():
+                try:
+                    camera_bp.set_attribute(key, str(value))
+                except Exception:
+                    pass
+
+            new_transform = self._transform_for_view(self.active_camera)
+            self._camera_sensor = self._world.spawn_actor(
+                camera_bp, new_transform, attach_to=self.vehicle,
+                attachment_type=self._attachment_for_view(self.active_camera),
+            )
+            self._camera_sensor.listen(self._on_camera_frame)
+            self._accepting_frames = True
+        except Exception as e:
+            logger.warning("Camera respawn for view switch failed: %s", e)
 
     def respawn(self) -> dict:
         """Teleport the vehicle to a random spawn point on the road."""
@@ -685,15 +800,18 @@ class DriveSession:
         camera_bp.set_attribute("fov", str(self._camera_fov))
         camera_bp.set_attribute("sensor_tick", "0.05")
 
-        # Apply remaining post-processing settings
+        # Apply remaining post-processing settings, persisting them so
+        # later view-switch respawns don't reset the user's tweaks.
         for key, value in params.items():
             try:
                 camera_bp.set_attribute(key, str(value))
+                self._camera_extra_attrs[key] = str(value)
             except Exception as e:
                 logger.debug("Camera attribute '%s' failed: %s", key, e)
 
         self._camera_sensor = self._world.spawn_actor(
-            camera_bp, current_transform, attach_to=self.vehicle
+            camera_bp, current_transform, attach_to=self.vehicle,
+            attachment_type=self._attachment_for_view(self.active_camera),
         )
         self._camera_sensor.listen(self._on_camera_frame)
         self._accepting_frames = True
@@ -836,10 +954,11 @@ class DriveSession:
     def clear_non_ego_vehicles(self) -> dict:
         """Destroy every vehicle in the world that isn't tagged as ego.
 
-        Preserves any actor with ``role_name == "ego_vehicle"`` so other
-        drive sessions (e.g. a second player on a different laptop sharing
-        this CARLA world) keep their car. Wipes traffic NPCs, OpenSCENARIO
-        actors, the trajectory playback car, and any user-placed vehicles.
+        Preserves any actor whose role_name starts with ``"ego_vehicle"`` so
+        every drive session keeps its car (each session stamps its ego with a
+        per-session unique suffix; see ``self._ego_role``). Wipes traffic
+        NPCs, OpenSCENARIO actors, the trajectory playback car, and any
+        user-placed vehicles.
         """
         if not self._active:
             raise RuntimeError("No active session")
@@ -848,7 +967,7 @@ class DriveSession:
         preserved = 0
         for actor in self._world.get_actors().filter("vehicle.*"):
             role = actor.attributes.get("role_name", "") if actor.attributes else ""
-            if role == "ego_vehicle":
+            if role.startswith("ego_vehicle"):
                 preserved += 1
                 continue
             try:
@@ -939,7 +1058,7 @@ class DriveSession:
                 continue
             alerts.append({
                 "id": actor.id,
-                "message": "Emergency firetruck approaching from behind. Pull over and yield.",
+                "message": "Firetruck approaching from behind",
                 "signal_type": "warning",
                 "distance": round(math.sqrt(dist_sq), 1),
             })
@@ -999,7 +1118,7 @@ class DriveSession:
 
             alerts.append({
                 "id": actor.id + 1_000_000,
-                "message": "Please yield to clear the fire truck path.",
+                "message": "Yield to clear firetruck path",
                 "signal_type": "warning",
                 "distance": round(math.sqrt(dist_sq), 1),
             })
@@ -1334,7 +1453,7 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
                 return {"type": "error", "message": "OpenSCENARIO runner unavailable"}
             if not msg.get("file"):
                 return {"type": "error", "message": "start_xosc_scenario requires 'file'"}
-            return session._openscenario_runner.start(msg["file"])
+            return session._openscenario_runner.start(msg["file"], ego_role=session._ego_role)
         elif msg_type == "stop_xosc_scenario":
             if session._openscenario_runner is None:
                 return {"type": "error", "message": "OpenSCENARIO runner unavailable"}
