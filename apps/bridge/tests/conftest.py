@@ -69,6 +69,19 @@ class MockColor:
     a: int = 255
 
 
+@dataclass
+class MockWeatherParameters:
+    cloudiness: float = 0.0
+    precipitation: float = 0.0
+    precipitation_deposits: float = 0.0
+    wind_intensity: float = 0.0
+    sun_azimuth_angle: float = 0.0
+    sun_altitude_angle: float = 0.0
+    fog_density: float = 0.0
+    fog_distance: float = 0.0
+    wetness: float = 0.0
+
+
 class MockDebugHelper:
     def __init__(self):
         self.lines: list[dict[str, Any]] = []
@@ -239,6 +252,7 @@ class MockWorld:
         self._next_id = 1
         self._settings = MockWorldSettings()
         self._map = MockMap()
+        self.weather: Optional[MockWeatherParameters] = None
         self._tick_count = 0
         self._blueprint_library = MockBlueprintLibrary()
         self.debug = MockDebugHelper()
@@ -255,6 +269,9 @@ class MockWorld:
     def apply_settings(self, settings: MockWorldSettings) -> None:
         self._settings.synchronous_mode = settings.synchronous_mode
         self._settings.fixed_delta_seconds = settings.fixed_delta_seconds
+
+    def set_weather(self, weather: MockWeatherParameters) -> None:
+        self.weather = weather
 
     def get_blueprint_library(self) -> MockBlueprintLibrary:
         return self._blueprint_library
@@ -341,12 +358,23 @@ class MockClient:
         self._world = world or MockWorld()
         self._timeout = 10.0
         self._traffic_manager = MockTrafficManager()
+        self.available_maps = ["TestMap", "San_Ramon"]
+        self.loaded_maps: list[str] = []
 
     def get_world(self) -> MockWorld:
         return self._world
 
     def set_timeout(self, seconds: float) -> None:
         self._timeout = seconds
+
+    def get_available_maps(self) -> list[str]:
+        return self.available_maps
+
+    def load_world(self, map_name: str) -> MockWorld:
+        self.loaded_maps.append(map_name)
+        self._world = MockWorld()
+        self._world._map = MockMap(map_name)
+        return self._world
 
     def get_trafficmanager(self) -> MockTrafficManager:
         return self._traffic_manager
@@ -371,6 +399,7 @@ def _install_fake_carla_module() -> None:
     fake_carla.VehicleControl = MockVehicleControl
     fake_carla.Vector3D = MockLocation
     fake_carla.Color = MockColor
+    fake_carla.WeatherParameters = MockWeatherParameters
     fake_carla.Client = MockCarlaClient
     fake_carla.Map = MockMap
     fake_carla.World = MockWorld

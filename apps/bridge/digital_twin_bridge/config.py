@@ -16,6 +16,7 @@ class Config:
     # CARLA connection
     CARLA_HOST: str = "localhost"
     CARLA_PORT: int = 2000
+    CARLA_MAP: str = "San_Ramon"
 
     # V2X API
     V2X_API_URL: str = (

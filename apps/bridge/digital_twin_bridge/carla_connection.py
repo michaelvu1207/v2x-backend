@@ -15,6 +15,11 @@ from digital_twin_bridge.config import Config
 logger = logging.getLogger(__name__)
 
 
+def _map_leaf(name: str) -> str:
+    """Return the final path component for CARLA map identifiers."""
+    return name.rsplit("/", 1)[-1]
+
+
 class CarlaConnection:
     """Persistent connection to a CARLA simulator instance.
 
@@ -51,6 +56,7 @@ class CarlaConnection:
 
         self._world = self._client.get_world()
         self._map = self._world.get_map()
+        self._load_configured_map_if_available()
 
         # Save original settings so we can restore them later
         self._original_settings = self._world.get_settings()
@@ -92,6 +98,59 @@ class CarlaConnection:
             "Connected to CARLA. Map: %s | Sync mode enabled.",
             self._map.name,
         )
+
+    def _load_configured_map_if_available(self) -> None:
+        """Load the configured CARLA map when the simulator advertises it."""
+        if self._client is None or self._world is None or self._map is None:
+            raise RuntimeError("Not connected to CARLA.")
+
+        requested_map = self._config.CARLA_MAP.strip()
+        if not requested_map:
+            return
+
+        current_map = self._map.name
+        if current_map == requested_map or _map_leaf(current_map) == requested_map:
+            logger.info("CARLA map already active: %s", current_map)
+            return
+
+        try:
+            available_maps = list(self._client.get_available_maps())
+        except Exception:
+            logger.warning(
+                "Failed to list CARLA maps; keeping current map %s.",
+                current_map,
+                exc_info=True,
+            )
+            return
+
+        target_map = next(
+            (
+                candidate
+                for candidate in available_maps
+                if candidate == requested_map or _map_leaf(candidate) == requested_map
+            ),
+            None,
+        )
+        if target_map is None:
+            logger.warning(
+                "Requested CARLA map %s is not available; keeping current map %s. "
+                "Available maps: %s",
+                requested_map,
+                current_map,
+                ", ".join(available_maps),
+            )
+            return
+
+        logger.info(
+            "Loading configured CARLA map %s (current=%s, available=%s)",
+            target_map,
+            current_map,
+            ", ".join(available_maps),
+        )
+        self._client.set_timeout(120.0)
+        self._world = self._client.load_world(target_map)
+        self._map = self._world.get_map()
+        logger.info("Loaded CARLA map: %s", self._map.name)
 
     def disconnect(self) -> None:
         """Restore original world settings and release references."""
