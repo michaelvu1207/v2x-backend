@@ -449,6 +449,21 @@ class DriveSession:
         self._bound_y = 1.0
         self._bound_z = 0.8
 
+    def update_runtime(
+        self,
+        world,
+        carla_map,
+        trajectory_player: Optional[TrajectoryPlayer] = None,
+        openscenario_runner=None,
+    ) -> None:
+        """Refresh server-owned CARLA references after an idle map switch."""
+        if self._active:
+            raise RuntimeError("Cannot update session runtime while active")
+        self._world = world
+        self._map = carla_map
+        self._trajectory_player = trajectory_player
+        self._openscenario_runner = openscenario_runner
+
     async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
 
@@ -458,7 +473,7 @@ class DriveSession:
             raise RuntimeError("Session already active")
 
         try:
-            if not _active_sessions:
+            if not any(s.is_active for s in _active_sessions):
                 apply_default_drive_weather(self._world)
             self._reconstructor = SceneReconstructor(
                 world=self._world,
@@ -1804,17 +1819,35 @@ class DriveSession:
         return self._active
 
 
-async def handle_message(session: DriveSession, msg: dict) -> dict:
+async def handle_message(session: DriveSession, msg: dict, map_controller=None) -> dict:
     """Route an incoming WebSocket message to the appropriate session method."""
     msg_type = msg.get("type", "")
 
     try:
         if msg_type == "server_status":
-            return {
+            response = {
                 "type": "server_status",
-                "active_sessions": len(_active_sessions),
+                "active_sessions": active_session_count(),
                 "this_session_active": session.is_active,
             }
+            if map_controller is not None:
+                response["map"] = map_controller.status_payload()
+            return response
+        elif msg_type == "list_maps":
+            if map_controller is None:
+                return {"type": "map_status", "current_map": None, "maps": []}
+            return {"type": "map_status", **map_controller.status_payload()}
+        elif msg_type == "set_map":
+            if map_controller is None:
+                return {"type": "error", "message": "Map switching is unavailable"}
+            result = await map_controller.switch_map(str(msg.get("map", "")))
+            session.update_runtime(
+                map_controller.world,
+                map_controller.carla_map,
+                map_controller.trajectory_player,
+                map_controller.openscenario_runner,
+            )
+            return result
         elif msg_type == "list_vehicles":
             vehicles = get_available_vehicles(session._world)
             return {"type": "vehicle_list", "vehicles": vehicles}
@@ -1962,6 +1995,10 @@ async def handle_message(session: DriveSession, msg: dict) -> dict:
 _active_sessions: list[DriveSession] = []
 
 
+def active_session_count() -> int:
+    return sum(1 for session in _active_sessions if session.is_active)
+
+
 async def serve_drive(
     websocket,
     world,
@@ -1971,6 +2008,7 @@ async def serve_drive(
     trajectory_player: Optional[TrajectoryPlayer] = None,
     openscenario_runner=None,
     eva_warning_distance_m: float = 20.0,
+    map_controller=None,
 ):
     """
     Handle a single WebSocket connection for driving.
@@ -1988,6 +2026,12 @@ async def serve_drive(
     serve_drive task subscribes to its event stream and forwards events to
     this connection's browser.
     """
+    if map_controller is not None:
+        world = map_controller.world
+        carla_map = map_controller.carla_map
+        trajectory_player = map_controller.trajectory_player
+        openscenario_runner = map_controller.openscenario_runner
+
     session = DriveSession(
         world=world,
         carla_map=carla_map,
@@ -2045,7 +2089,7 @@ async def serve_drive(
                 continue
 
             msg = json.loads(raw_message)
-            response = await handle_message(session, msg)
+            response = await handle_message(session, msg, map_controller=map_controller)
             await websocket.send(json.dumps(response))
 
             # Track session and start frame streaming once active

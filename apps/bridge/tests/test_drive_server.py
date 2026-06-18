@@ -300,6 +300,7 @@ class TestDriveServerMessageHandling:
             carla_map=mock_world.get_map(),
             api_fetcher=fake_v2x_api.get_detections_range,
         )
+        await session.start("2026-03-22T17:00:00Z", "2026-03-22T17:30:00Z")
         drive_server._active_sessions.clear()
         drive_server._active_sessions.append(session)
 
@@ -308,8 +309,62 @@ class TestDriveServerMessageHandling:
         assert response == {
             "type": "server_status",
             "active_sessions": 1,
-            "this_session_active": False,
+            "this_session_active": True,
         }
+        drive_server._active_sessions.clear()
+
+    @pytest.mark.asyncio
+    async def test_set_map_handler_uses_controller_only_when_idle(self, mock_world, fake_v2x_api):
+        from digital_twin_bridge import drive_server
+        from digital_twin_bridge.drive_server import DriveSession, handle_message
+
+        class FakeMapController:
+            world = mock_world
+            carla_map = mock_world.get_map()
+            trajectory_player = None
+            openscenario_runner = None
+
+            def status_payload(self):
+                return {
+                    "current_map": "richmond",
+                    "current_map_name": "Richmond_Field_Station_Richmond_CA",
+                    "maps": [
+                        {"id": "richmond", "label": "Richmond", "map_name": "Richmond_Field_Station_Richmond_CA"},
+                        {"id": "san_ramon", "label": "San Ramon", "map_name": "San_Ramon_P1_Roads"},
+                    ],
+                }
+
+            async def switch_map(self, map_id):
+                if drive_server.active_session_count() > 0:
+                    raise RuntimeError("End the active drive session before switching maps")
+                return {"type": "map_set", "current_map": map_id, "maps": self.status_payload()["maps"]}
+
+        session = DriveSession(
+            world=mock_world,
+            carla_map=mock_world.get_map(),
+            api_fetcher=fake_v2x_api.get_detections_range,
+        )
+        controller = FakeMapController()
+        drive_server._active_sessions.clear()
+
+        idle_response = await handle_message(
+            session,
+            {"type": "set_map", "map": "san_ramon"},
+            map_controller=controller,
+        )
+        assert idle_response["type"] == "map_set"
+        assert idle_response["current_map"] == "san_ramon"
+
+        drive_server._active_sessions.clear()
+        await session.start("2026-03-22T17:00:00Z", "2026-03-22T17:30:00Z")
+        drive_server._active_sessions.append(session)
+        active_response = await handle_message(
+            session,
+            {"type": "set_map", "map": "richmond"},
+            map_controller=controller,
+        )
+        assert active_response["type"] == "error"
+        assert "active drive session" in active_response["message"]
         drive_server._active_sessions.clear()
 
 

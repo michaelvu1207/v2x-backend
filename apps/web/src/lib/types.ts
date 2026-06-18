@@ -127,6 +127,14 @@ export interface VehicleOption {
 	wheels: number;
 }
 
+export type DriveMapId = 'richmond' | 'san_ramon';
+
+export interface DriveMapOption {
+	id: DriveMapId;
+	label: string;
+	map_name: string;
+}
+
 export interface SpawnableObject {
 	id: string;
 	name: string;

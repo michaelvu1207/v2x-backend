@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { DRIVE_TUNNELS, buildDriveTunnels, type DriveTunnel, type TunnelId } from '$lib/constants';
-	import type { CameraView, SpawnableObject } from '$lib/types';
+	import type { CameraView, DriveMapId, DriveMapOption, SpawnableObject } from '$lib/types';
 
 	import {
 		gamepadConnected,
@@ -26,6 +26,9 @@
 		lastError,
 		objectsCount,
 		vehicleList,
+		driveMaps,
+		currentDriveMap,
+		mapSwitching,
 		spawnableObjects,
 		placedCount,
 		scenarioList,
@@ -40,6 +43,7 @@
 		respawnVehicle,
 		clearNonEgoVehicles,
 		requestVehicles,
+		requestMaps,
 		requestObjects,
 		requestScenarios,
 		saveScenario,
@@ -51,6 +55,7 @@
 		undoPlace,
 		undoV2xSignal,
 		setOnFrame,
+		setDriveMap,
 	} from '$lib/stores/driveSocket';
 
 	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
@@ -90,6 +95,7 @@
 	let geofenceRadiusM = $state(35);
 	let dynamicActorMessage = $state('Moving emergency vehicle geofence active');
 	let selectedScenario = $state('');
+	let lastLoadedScenarioFile = $state('');
 	let showSaveDialog = $state(false);
 	let scenarioName = $state('');
 	let showZoneEditor = $state(false);
@@ -154,6 +160,11 @@
 	let numZones = $derived($v2xZones.length);
 
 	let vehicles = $derived($vehicleList);
+	let maps: DriveMapOption[] = $derived($driveMaps.length > 0 ? $driveMaps : [
+		{ id: 'richmond', label: 'Richmond', map_name: 'Richmond_Field_Station_Richmond_CA' },
+		{ id: 'san_ramon', label: 'San Ramon', map_name: 'San_Ramon_P1_Roads' },
+	]);
+	let selectedMap: DriveMapId = $derived($currentDriveMap ?? 'richmond');
 	let objects = $derived($spawnableObjects);
 	let scenarios = $derived($scenarioList);
 	let numPlaced = $derived($placedCount);
@@ -178,6 +189,23 @@
 		vehicleList.set([]);
 		disconnect();
 		connect(getSelectedUrl());
+	}
+
+	async function refreshMapData() {
+		try {
+			mapData = await fetchMapDataFull();
+		} catch {
+			console.warn('Failed to load map data for mini-map');
+		}
+	}
+
+	function handleMapSwitch(id: DriveMapId) {
+		if (id === selectedMap || $mapSwitching || state !== 'idle') return;
+		selectedScenario = '';
+		lastLoadedScenarioFile = '';
+		clearZones();
+		mapData = null;
+		setDriveMap(id);
 	}
 
 	let connected = $derived($driveConnected);
@@ -209,9 +237,18 @@
 	// Request vehicle list and scenarios once connected
 	$effect(() => {
 		if ($driveConnected && $vehicleList.length === 0) {
+			requestMaps();
 			requestVehicles();
 			requestScenarios();
 		}
+	});
+
+	let lastMapDataRefresh = $state('');
+	$effect(() => {
+		const mapId = $currentDriveMap;
+		if (!mapId || mapId === lastMapDataRefresh) return;
+		lastMapDataRefresh = mapId;
+		void refreshMapData();
 	});
 
 	onMount(async () => {
@@ -233,12 +270,7 @@
 			}
 		});
 
-		// Fetch map data for mini-map and coordinate conversion
-		try {
-			mapData = await fetchMapDataFull();
-		} catch {
-			console.warn('Failed to load map data for mini-map');
-		}
+		await refreshMapData();
 	});
 
 	onDestroy(() => {
@@ -247,7 +279,6 @@
 
 	// Load scenario zones immediately at idle when user selects one.
 	// Server responds with zones (and no object spawn because no active session).
-	let lastLoadedScenarioFile = $state('');
 	$effect(() => {
 		if (!$driveConnected || !selectedScenario) return;
 		if (selectedScenario === lastLoadedScenarioFile) return;
@@ -534,6 +565,25 @@
 										? 'bg-gray-700 text-white shadow-sm'
 										: 'text-gray-500 hover:text-gray-300'}">
 									{tunnel.label.toUpperCase()}
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<!-- Vehicle picker -->
+					<div class="mb-3">
+						<label class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Map</label>
+						<div class="flex bg-gray-800/50 rounded-xl p-1 border border-gray-800">
+							{#each maps as map}
+								<button
+									onclick={() => handleMapSwitch(map.id)}
+									disabled={$mapSwitching || state !== 'idle'}
+									aria-pressed={selectedMap === map.id}
+									class="flex-1 px-3 py-2 rounded-lg text-xs font-body tracking-wider transition-all duration-200 cursor-pointer disabled:cursor-wait disabled:opacity-60
+									{selectedMap === map.id
+										? 'bg-gray-700 text-white shadow-sm'
+										: 'text-gray-500 hover:text-gray-300'}">
+									{map.label.toUpperCase()}
 								</button>
 							{/each}
 						</div>

@@ -30,8 +30,8 @@ import requests
 import websockets
 
 from digital_twin_bridge.config import Config
-from digital_twin_bridge.carla_connection import CarlaConnection
-from digital_twin_bridge.drive_server import serve_drive, _active_sessions
+from digital_twin_bridge.carla_connection import CarlaConnection, drive_map_status
+from digital_twin_bridge.drive_server import serve_drive, _active_sessions, active_session_count
 from digital_twin_bridge.trajectory_player import TrajectoryPlayer
 from digital_twin_bridge.openscenario_runner import OpenScenarioRunner
 
@@ -121,6 +121,131 @@ def make_api_fetcher(config: Config):
     return fetch
 
 
+def cleanup_drive_world(world, shared_prop_pool: dict[str, int] | None = None, registry=None) -> None:
+    """Remove drive-owned actors from the current world."""
+    for actor in world.get_actors().filter("vehicle.*"):
+        logger.info("Cleaning up leftover vehicle: %s (id=%d)", actor.type_id, actor.id)
+        actor.destroy()
+    for actor in world.get_actors().filter("sensor.*"):
+        logger.info("Cleaning up leftover sensor: %s (id=%d)", actor.type_id, actor.id)
+        actor.destroy()
+    leftover_props = world.get_actors().filter("static.prop.*")
+    if leftover_props:
+        logger.info("Cleaning up %d leftover static prop(s)", len(leftover_props))
+        for actor in leftover_props:
+            try:
+                actor.destroy()
+            except Exception as e:
+                logger.debug("Prop destroy failed (id=%d): %s", actor.id, e)
+    if shared_prop_pool is not None:
+        shared_prop_pool.clear()
+
+
+def create_openscenario_runner(config: Config, world):
+    return OpenScenarioRunner(
+        scenario_runner_path=config.SCENARIO_RUNNER_PATH,
+        carla_host=config.CARLA_HOST,
+        carla_port=config.CARLA_PORT,
+        python_executable=config.SCENARIO_RUNNER_PYTHON or None,
+        pythonpath_prefix=config.SCENARIO_RUNNER_PYTHONPATH,
+        world=world,
+    )
+
+
+def export_current_map_data(conn: CarlaConnection, config: Config, uplink) -> None:
+    """Export the active CARLA map locally and to S3 when uplink is available."""
+    if uplink is None:
+        return
+    from digital_twin_bridge.map_data import MapDataExporter
+
+    map_exporter = MapDataExporter(conn)
+    snapshot_dir = config.LOCAL_SNAPSHOT_DIR
+    os.makedirs(snapshot_dir, exist_ok=True)
+    map_data = map_exporter.export_to_json(
+        os.path.join(snapshot_dir, "map_data.json")
+    )
+    uplink.upload_map_data(map_data)
+    logger.info("Map data exported and uploaded to S3")
+
+
+class DriveMapController:
+    """Coordinates safe runtime switching between the two public drive maps."""
+
+    def __init__(
+        self,
+        conn: CarlaConnection,
+        config: Config,
+        runtime: dict,
+        shared_prop_pool: dict[str, int],
+        uplink,
+    ) -> None:
+        self._conn = conn
+        self._config = config
+        self._runtime = runtime
+        self._shared_prop_pool = shared_prop_pool
+        self._uplink = uplink
+        self._lock = asyncio.Lock()
+
+    @property
+    def world(self):
+        return self._runtime["world"]
+
+    @property
+    def carla_map(self):
+        return self._runtime["carla_map"]
+
+    @property
+    def trajectory_player(self):
+        return self._runtime["trajectory_player"]
+
+    @property
+    def openscenario_runner(self):
+        return self._runtime["openscenario_runner"]
+
+    def status_payload(self) -> dict:
+        return drive_map_status(self._conn.carla_map.name)
+
+    async def switch_map(self, map_id: str) -> dict:
+        async with self._lock:
+            if active_session_count() > 0:
+                raise RuntimeError("End the active drive session before switching maps")
+            if self.trajectory_player.is_active():
+                raise RuntimeError("Stop trajectory playback before switching maps")
+            if self.openscenario_runner.is_running:
+                raise RuntimeError("Stop OpenSCENARIO before switching maps")
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, self._conn.switch_drive_map, map_id)
+
+            try:
+                self.trajectory_player.stop()
+            except Exception as e:
+                logger.debug("Trajectory stop before map switch failed: %s", e)
+            try:
+                self.openscenario_runner.stop()
+            except Exception as e:
+                logger.debug("OpenSCENARIO stop before map switch failed: %s", e)
+
+            cleanup_drive_world(self._conn.world, self._shared_prop_pool)
+            self._runtime["world"] = self._conn.world
+            self._runtime["carla_map"] = self._conn.carla_map
+            self._runtime["trajectory_player"] = TrajectoryPlayer(
+                self._conn.world,
+                self._conn.carla_map,
+            )
+            self._runtime["openscenario_runner"] = create_openscenario_runner(
+                self._config,
+                self._conn.world,
+            )
+
+            try:
+                await loop.run_in_executor(None, export_current_map_data, self._conn, self._config, self._uplink)
+            except Exception:
+                logger.warning("Map data export after map switch failed", exc_info=True)
+
+            return {"type": "map_set", **result}
+
+
 # ── Main ────────────────────────────────────────────────────────────
 
 
@@ -139,24 +264,7 @@ async def main():
     world = conn.world
     carla_map = conn.carla_map
 
-    # Clean up leftover actors from previous sessions. `static.prop.*` includes
-    # V2X-detected cones/warnings from the previous boot plus any user-placed
-    # props left by spawn_object; without wiping them, each restart stacks a
-    # fresh copy on top of the old.
-    for actor in world.get_actors().filter("vehicle.*"):
-        logger.info("Cleaning up leftover vehicle: %s (id=%d)", actor.type_id, actor.id)
-        actor.destroy()
-    for actor in world.get_actors().filter("sensor.*"):
-        logger.info("Cleaning up leftover sensor: %s (id=%d)", actor.type_id, actor.id)
-        actor.destroy()
-    leftover_props = world.get_actors().filter("static.prop.*")
-    if leftover_props:
-        logger.info("Cleaning up %d leftover static prop(s) from previous boot", len(leftover_props))
-        for actor in leftover_props:
-            try:
-                actor.destroy()
-            except Exception as e:
-                logger.debug("Prop destroy failed (id=%d): %s", actor.id, e)
+    cleanup_drive_world(world)
 
     # ── V2X props: boot spawn disabled ──
     # PropSpawner is intentionally not invoked here. Production V2X
@@ -170,18 +278,10 @@ async def main():
     # ── Map data: export road network to S3 ──
     uplink = None
     try:
-        from digital_twin_bridge.map_data import MapDataExporter
         from digital_twin_bridge.uplink import Uplink
 
         uplink = Uplink(config)
-        map_exporter = MapDataExporter(conn)
-        snapshot_dir = config.LOCAL_SNAPSHOT_DIR
-        os.makedirs(snapshot_dir, exist_ok=True)
-        map_data = map_exporter.export_to_json(
-            os.path.join(snapshot_dir, "map_data.json")
-        )
-        uplink.upload_map_data(map_data)
-        logger.info("Map data exported and uploaded to S3")
+        export_current_map_data(conn, config, uplink)
     except Exception:
         logger.warning("Map data export failed (non-fatal)", exc_info=True)
 
@@ -194,23 +294,24 @@ async def main():
     trajectory_player = TrajectoryPlayer(world, carla_map)
 
     # ── OpenSCENARIO runner (singleton: one .xosc at a time across all sessions) ──
-    openscenario_runner = OpenScenarioRunner(
-        scenario_runner_path=config.SCENARIO_RUNNER_PATH,
-        carla_host=config.CARLA_HOST,
-        carla_port=config.CARLA_PORT,
-        python_executable=config.SCENARIO_RUNNER_PYTHON or None,
-        pythonpath_prefix=config.SCENARIO_RUNNER_PYTHONPATH,
-        world=world,
-    )
+    openscenario_runner = create_openscenario_runner(config, world)
+    runtime = {
+        "world": world,
+        "carla_map": carla_map,
+        "trajectory_player": trajectory_player,
+        "openscenario_runner": openscenario_runner,
+    }
+    map_controller = DriveMapController(conn, config, runtime, shared_prop_pool, uplink)
 
     # ── Drive server setup ──
     api_fetcher = make_api_fetcher(config)
 
     async def handler(websocket):
         await serve_drive(
-            websocket, world, carla_map, api_fetcher,
-            shared_prop_pool, trajectory_player, openscenario_runner,
+            websocket, runtime["world"], runtime["carla_map"], api_fetcher,
+            shared_prop_pool, runtime["trajectory_player"], runtime["openscenario_runner"],
             eva_warning_distance_m=config.EVA_WARNING_DISTANCE_M,
+            map_controller=map_controller,
         )
 
     async def tick_loop():
@@ -228,6 +329,9 @@ async def main():
         target_dt = 0.05
         was_running = False
         while True:
+            world = runtime["world"]
+            trajectory_player = runtime["trajectory_player"]
+            openscenario_runner = runtime["openscenario_runner"]
             if openscenario_runner.is_running:
                 was_running = True
                 await asyncio.sleep(target_dt)
@@ -262,10 +366,11 @@ async def main():
         """Every 60s, check for orphaned actors when no sessions are active."""
         while True:
             await asyncio.sleep(60)
-            if _active_sessions:
+            if active_session_count() > 0:
                 continue
             try:
                 from digital_twin_bridge.drive_server import _traffic_actor_ids
+                world = runtime["world"]
                 vehicles = [v for v in world.get_actors().filter("vehicle.*")
                             if v.id not in _traffic_actor_ids
                             and v.attributes.get("role_name") != "trajectory"]
@@ -349,13 +454,13 @@ async def main():
 
         # Stop any active trajectory playback (server-owned, not session-owned).
         try:
-            trajectory_player.stop()
+            runtime["trajectory_player"].stop()
         except Exception as e:
             logger.debug("Trajectory stop on shutdown failed: %s", e)
 
         # Stop any running OpenSCENARIO subprocess.
         try:
-            openscenario_runner.stop()
+            runtime["openscenario_runner"].stop()
         except Exception as e:
             logger.debug("OpenSCENARIO stop on shutdown failed: %s", e)
 
@@ -364,7 +469,7 @@ async def main():
             destroyed = 0
             for actor_id in list(shared_prop_pool.values()):
                 try:
-                    actor = world.get_actor(actor_id)
+                    actor = runtime["world"].get_actor(actor_id)
                     if actor is not None:
                         actor.destroy()
                         destroyed += 1
