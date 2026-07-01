@@ -14,6 +14,7 @@ import kinesis_utils
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import radians, cos, sin, asin, sqrt
+from urllib.parse import urlparse
 from tracking_utils import AppearanceExtractor, KalmanTracker
 
 def env_bool(name, default=False):
@@ -66,6 +67,14 @@ class FrameBroadcaster:
         self.jpeg_quality = int(jpeg_quality)
         self.frames = {}
         self.frame_counts = {camera_id: 0 for camera_id in self.camera_ids}
+        self.latest_detections = {
+            camera_id: {
+                "updated_at": None,
+                "frame_count": 0,
+                "detections": [],
+            }
+            for camera_id in self.camera_ids
+        }
         self.condition = threading.Condition()
 
     def publish(self, camera_id, frame):
@@ -81,6 +90,36 @@ class FrameBroadcaster:
             self.frames[camera_id] = encoded.tobytes()
             self.frame_counts[camera_id] = self.frame_counts.get(camera_id, 0) + 1
             self.condition.notify_all()
+
+    def publish_detections(self, camera_id, detections):
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        summary = []
+        for det in detections:
+            metadata = det.get("camera_data", {}).get("bifocal_metadata", {})
+            summary.append({
+                "object_id": det.get("object_id"),
+                "object_type": det.get("object_type"),
+                "confidence_score": det.get("confidence_score"),
+                "timestamp_utc": det.get("timestamp_utc"),
+                "device_id": det.get("device_id"),
+                "track_id": det.get("track_id"),
+                "bbox": metadata.get("bbox"),
+            })
+
+        with self.condition:
+            self.latest_detections[camera_id] = {
+                "updated_at": now_utc,
+                "frame_count": self.frame_counts.get(camera_id, 0),
+                "detections": summary,
+            }
+            self.condition.notify_all()
+
+    def snapshot_detections(self):
+        with self.condition:
+            return json.loads(json.dumps({
+                "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "cameras": self.latest_detections,
+            }))
 
     def wait_for_frame(self, camera_id, last_count, timeout=5.0):
         with self.condition:
@@ -108,16 +147,38 @@ class PerceptionHttpServer:
             def _set_cors(self):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Headers", "content-type")
+                self.send_header("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS")
+
+            def _send_json(self, status, payload):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self._set_cors()
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+
+            def do_OPTIONS(self):
+                self.send_response(204)
+                self._set_cors()
+                self.end_headers()
 
             def do_HEAD(self):
-                if self.path == "/health":
-                    self.send_response(200)
-                    self._set_cors()
-                    self.send_header("content-type", "application/json")
-                    self.end_headers()
+                path = urlparse(self.path).path
+                if path == "/health":
+                    self._send_json(200, {
+                        "status": "ok",
+                        "cameras": broadcaster.camera_ids,
+                        "frames": broadcaster.frame_counts,
+                    })
                     return
 
-                match = re.match(r"^/streams/([^/.]+)\.(mjpg|mjpeg)$", self.path)
+                if path == "/detections/latest":
+                    self._send_json(200, broadcaster.snapshot_detections())
+                    return
+
+                match = re.match(r"^/streams/([^/.]+)\.(mjpg|mjpeg)$", path)
                 if match and match.group(1) in broadcaster.camera_ids:
                     self.send_response(200)
                     self._set_cors()
@@ -132,21 +193,20 @@ class PerceptionHttpServer:
                 self.end_headers()
 
             def do_GET(self):
-                if self.path == "/health":
-                    body = json.dumps({
+                path = urlparse(self.path).path
+                if path == "/health":
+                    self._send_json(200, {
                         "status": "ok",
                         "cameras": broadcaster.camera_ids,
                         "frames": broadcaster.frame_counts,
-                    }).encode("utf-8")
-                    self.send_response(200)
-                    self._set_cors()
-                    self.send_header("content-type", "application/json")
-                    self.send_header("content-length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                    })
                     return
 
-                match = re.match(r"^/streams/([^/.]+)\.(mjpg|mjpeg)$", self.path)
+                if path == "/detections/latest":
+                    self._send_json(200, broadcaster.snapshot_detections())
+                    return
+
+                match = re.match(r"^/streams/([^/.]+)\.(mjpg|mjpeg)$", path)
                 if not match:
                     self.send_response(404)
                     self._set_cors()
@@ -582,6 +642,8 @@ class MultiCameraPipeline:
 
                     det_2d = detector.extract_detections(results[0], frame_count)
                     det_3d = detector.compute_3d_detections(det_2d, current_utc_str, current_epoch)
+                    if stream_broadcaster:
+                        stream_broadcaster.publish_detections(camera_ids[i], det_3d)
 
                     for det in det_3d:
                         if det['object_type'] == 'person':
